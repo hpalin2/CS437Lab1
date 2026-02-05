@@ -1,0 +1,7 @@
+# Core dependencies for picar development
+# Note: picar-x/picar-4wd itself needs to be installed on Raspberry Pi
+# This file is for additional dependencies you might need
+
+numpy>=1.21.0
+opencv-python>=4.5.0
+# Add other dependencies as needed for your development
