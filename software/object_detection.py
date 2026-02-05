@@ -208,6 +208,10 @@ class MediaPipeDetector:
             # Picamera2 capture
             try:
                 frame = self.camera.capture_array()
+                # Validate frame
+                if frame is None or frame.size == 0:
+                    print("[ERROR] Picamera2 returned empty frame")
+                    return None
                 # Picamera2 returns RGB, convert to BGR for OpenCV compatibility
                 frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 return frame_bgr
@@ -217,7 +221,7 @@ class MediaPipeDetector:
         else:
             # OpenCV capture
             ret, frame = self.camera.read()
-            if ret:
+            if ret and frame is not None and frame.size > 0:
                 return frame
             return None
     
@@ -237,38 +241,60 @@ class MediaPipeDetector:
             if frame is None:
                 return []
         
+        # Validate frame dimensions and format
+        if frame.size == 0 or len(frame.shape) < 2:
+            print("[WARNING] Invalid frame dimensions, skipping detection")
+            return []
+        
+        frame_height, frame_width = frame.shape[:2]
+        
         # Resize for speed (optional, but recommended for Pi)
         # Keep original size for better accuracy, or resize for speed
         # frame = cv2.resize(frame, (320, 240))  # Uncomment for faster processing
         
-        # Convert BGR to RGB
-        if len(frame.shape) == 3 and frame.shape[2] == 3:
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        else:
-            frame_rgb = frame
-        
-        # Create MediaPipe image
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-        
-        # Detect objects
-        detection_result = self.detector.detect(mp_image)
-        
-        # Convert to our format with normalized labels
-        detections = []
-        for detection in detection_result.detections:
-            bbox = detection.bounding_box
-            category = detection.categories[0]
+        try:
+            # Convert BGR to RGB
+            if len(frame.shape) == 3 and frame.shape[2] == 3:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            else:
+                frame_rgb = frame
             
-            # Normalize label (handles "stop sign" vs "stop_sign", etc.)
-            label = normalize_label(category.category_name)
+            # Create MediaPipe image
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
             
-            detections.append({
-                'class': label,
-                'confidence': category.score,
-                'bbox': (bbox.origin_x, bbox.origin_y, bbox.width, bbox.height)
-            })
+            # Detect objects
+            detection_result = self.detector.detect(mp_image)
+            
+            # Convert to our format with normalized labels and validated bboxes
+            detections = []
+            for detection in detection_result.detections:
+                bbox = detection.bounding_box
+                category = detection.categories[0]
+                
+                # Validate and clamp bounding box coordinates
+                x = max(0, min(bbox.origin_x, frame_width - 1))
+                y = max(0, min(bbox.origin_y, frame_height - 1))
+                w = max(1, min(bbox.width, frame_width - x))
+                h = max(1, min(bbox.height, frame_height - y))
+                
+                # Skip invalid detections (bounding box too small or malformed)
+                if w < 5 or h < 5:
+                    continue
+                
+                # Normalize label (handles "stop sign" vs "stop_sign", etc.)
+                label = normalize_label(category.category_name)
+                
+                detections.append({
+                    'class': label,
+                    'confidence': category.score,
+                    'bbox': (x, y, w, h)
+                })
+            
+            return detections
         
-        return detections
+        except Exception as e:
+            print(f"[ERROR] Detection failed: {e}")
+            return []
     
     def cleanup(self):
         """Clean up resources"""
@@ -484,9 +510,15 @@ class VisionOverride:
         
         self.person_present = person_present
         
-        # If stop sign detected, stop for 2 seconds
+        # If stop sign detected, stop for 2 seconds from NOW
+        # (Don't extend indefinitely - reset to 2 seconds from current time)
         if stop_sign_present:
-            self.stop_until_ts = max(self.stop_until_ts, now + 2.0)
+            self.stop_sign_present = True
+            self.stop_until_ts = now + 2.0  # Fixed: was using max(), now resets properly
+        else:
+            # Clear stop sign flag if not currently detected
+            if now >= self.stop_until_ts:
+                self.stop_sign_present = False
     
     def should_stop(self, now=None):
         """
@@ -582,12 +614,13 @@ def visualize_detections(frame, detections, fps=0.0, override_status=None):
     return annotated
 
 
-def test_object_detection_with_viewer(show_viewer=True):
+def test_object_detection_with_viewer(show_viewer=True, target_fps=10):
     """
     Test object detection system with optional viewer window.
     
     Args:
         show_viewer: If True, shows OpenCV window with detections
+        target_fps: Target FPS to limit CPU usage (None for unlimited)
     """
     print("=" * 60)
     print("Object Detection Test")
@@ -604,42 +637,67 @@ def test_object_detection_with_viewer(show_viewer=True):
     
     print(f"\nUsing backend: {detector.detection_backend}")
     print(f"Running on: {'Raspberry Pi' if is_raspberry_pi() else 'PC'}")
-    print(f"Viewer: {'Enabled' if show_viewer else 'Disabled'}\n")
+    print(f"Viewer: {'Enabled' if show_viewer else 'Disabled'}")
+    if target_fps:
+        print(f"Target FPS: {target_fps} (CPU optimized)\n")
+    else:
+        print("Target FPS: Unlimited\n")
     
     # Create override for integration demo
     override = VisionOverride()
     
-    # FPS tracking
-    last_time = time.time()
-    fps = 0.0
+    # FPS tracking with better initialization
+    fps = target_fps if target_fps else 10.0  # Better initial value
     frame_count = 0
+    min_frame_time = (1.0 / target_fps) if target_fps else 0.0
+    
+    # Detection debouncing to reduce flicker
+    person_debounce = 0  # Counter for person detections
+    stop_sign_debounce = 0  # Counter for stop sign detections
+    DEBOUNCE_THRESHOLD = 2  # Need N consecutive detections to trigger
     
     try:
         while True:
             frame_start = time.time()
             
-            # Get frame
+            # Get frame with error recovery
             frame = detector.get_frame()
             if frame is None:
-                print("[WARNING] Could not get frame, skipping...")
+                print("[WARNING] Could not get frame, retrying...")
                 time.sleep(0.1)
                 continue
             
             # Detect objects
             detections = detector.detect_objects(frame)
             
-            # Check for critical objects
-            person_present = any('person' in normalize_label(d['class']) for d in detections)
-            stop_sign_present = any('stop sign' in normalize_label(d['class']) for d in detections)
+            # Check for critical objects with debouncing
+            person_detected = any('person' in normalize_label(d['class']) for d in detections)
+            stop_sign_detected = any('stop sign' in normalize_label(d['class']) for d in detections)
+            
+            # Update debounce counters
+            if person_detected:
+                person_debounce = min(person_debounce + 1, DEBOUNCE_THRESHOLD)
+            else:
+                person_debounce = max(person_debounce - 1, 0)
+            
+            if stop_sign_detected:
+                stop_sign_debounce = min(stop_sign_debounce + 1, DEBOUNCE_THRESHOLD)
+            else:
+                stop_sign_debounce = max(stop_sign_debounce - 1, 0)
+            
+            # Only trigger if debounce threshold met
+            person_present = person_debounce >= DEBOUNCE_THRESHOLD
+            stop_sign_present = stop_sign_debounce >= DEBOUNCE_THRESHOLD
             
             # Update override
             override.update(person_present, stop_sign_present, time.time())
             
-            # Calculate FPS
+            # Calculate FPS with exponential moving average
             frame_time = time.time() - frame_start
             if frame_time > 0:
                 current_fps = 1.0 / frame_time
-                fps = 0.9 * fps + 0.1 * current_fps  # Exponential moving average
+                # Smooth FPS calculation
+                fps = 0.9 * fps + 0.1 * current_fps
             
             frame_count += 1
             
@@ -660,15 +718,21 @@ def test_object_detection_with_viewer(show_viewer=True):
                 cv2.imshow("Object Detection", annotated)
                 
                 # Check for quit
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
                     print("\nQuitting (q pressed)...")
                     break
             else:
                 # No viewer, just print occasionally
                 if frame_count % 30 == 0:
                     print(f"Frame {frame_count}: {len(detections)} objects detected")
-                
-                time.sleep(0.1)  # Small delay when no viewer
+            
+            # FPS limiting to reduce CPU usage
+            if target_fps:
+                elapsed = time.time() - frame_start
+                sleep_time = max(0, min_frame_time - elapsed)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
     
     except KeyboardInterrupt:
         print("\nInterrupted by user")
