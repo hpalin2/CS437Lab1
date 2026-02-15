@@ -34,7 +34,7 @@ The PiCar uses several sensors to perceive its environment:
 - **Resolution**: Varies (typically 640x480 or higher)
 - **Frame rate**: ~1 FPS on Pi (limited by processing power)
 - **Data output**: Image frames (numpy arrays)
-- **Used in**: Part 2 (object detection - Step 7)
+- **Used in**: Part 2 (object detection - Step 2.2)
 
 ### Secondary Sensors (Available but not required for core lab)
 
@@ -82,7 +82,7 @@ The PiCar uses several sensors to perceive its environment:
 
 ---
 
-### Part 2: Advanced Mapping (Step 6)
+### Part 2: Advanced Mapping (Step 2.1)
 
 ```
 ┌─────────────┐
@@ -128,7 +128,7 @@ The PiCar uses several sensors to perceive its environment:
 
 ---
 
-### Part 2: Object Detection (Step 7)
+### Part 2: Object Detection (Step 2.2)
 
 ```
 ┌─────────────┐
@@ -177,12 +177,12 @@ The PiCar uses several sensors to perceive its environment:
 
 ---
 
-### Part 2: A* Pathfinding (Step 8)
+### Part 2: A* Pathfinding (Step 2.3)
 
 ```
 ┌─────────────────┐
 │  Advanced Map   │ → 100×100 numpy array
-│  (from Step 6)  │   (0s and 1s)
+│  (from Step 2.1)│   (0s and 1s)
 └──────┬──────────┘
        │
        ▼
@@ -226,7 +226,7 @@ The PiCar uses several sensors to perceive its environment:
 
 ### Part 1 Algorithms
 
-#### **Simple Reactive Control** (Step 4)
+#### **Simple Reactive Control** (Step 1.4)
 - **Location**: `obstacle_avoidance.py`
 - **Algorithm**: Threshold-based reactive control
 - **Complexity**: O(1) per iteration
@@ -249,7 +249,7 @@ while True:
 
 ### Part 2 Algorithms
 
-#### **Non-Probabilistic Mapping** (Step 6)
+#### **Non-Probabilistic Mapping** (Step 2.1)
 - **Location**: `advanced_mapping.py` (to be created)
 - **Algorithm**: Polar-to-Cartesian conversion + grid mapping
 - **Complexity**: O(n) where n = number of scan angles
@@ -263,7 +263,7 @@ while True:
 2. **Grid mapping**: Mark obstacles in discrete grid
 3. **Interpolation**: Fill gaps between scan points
 
-#### **Object Detection** (Step 7)
+#### **Object Detection** (Step 2.2)
 - **Location**: `object_detection.py` (to be created)
 - **Algorithm**: Deep learning CNN (Convolutional Neural Network)
 - **Model**: Pre-trained TensorFlow Lite model (e.g., COCO)
@@ -276,7 +276,7 @@ while True:
 2. Neural network inference (TensorFlow Lite)
 3. Post-processing (filtering, NMS)
 
-#### **A* Pathfinding** (Step 8)
+#### **A* Pathfinding** (Step 2.3)
 - **Location**: `astar_routing.py` (to be created)
 - **Algorithm**: A* (A-star) graph search
 - **Complexity**: O(b^d) worst case, but much better with good heuristic
@@ -300,7 +300,7 @@ where:
 
 ## 4. System Integration Flow
 
-### Full Self-Driving System (Step 9)
+### Full Self-Driving System (Step 2.4)
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -312,8 +312,8 @@ where:
         ▼           ▼           ▼
 ┌───────────┐ ┌───────────┐ ┌───────────┐
 │  Mapping  │ │  Object   │ │  Speed    │
-│  (Step 6) │ │ Detection │ │  Sensors  │
-│           │ │ (Step 7)  │ │           │
+│  (Step 2.1)│ │ Detection │ │  Sensors  │
+│           │ │ (Step 2.2)│ │           │
 └─────┬─────┘ └─────┬─────┘ └─────┬─────┘
       │             │             │
       └─────────────┼─────────────┘
@@ -327,7 +327,7 @@ where:
                     ▼
             ┌───────────────┐
             │  A* Routing   │
-            │  (Step 8)     │
+            │  (Step 2.3)   │
             └───────┬───────┘
                     │
                     ▼

@@ -57,7 +57,7 @@ def test_ultrasonic_sensor(hw, num_readings=5):
     return distances
 
 def test_obstacle_avoidance(hw):
-    """Test basic obstacle avoidance logic (as described in Step 4 of Part 1)"""
+    """Test basic obstacle avoidance logic (as described in Step 1.4 of Part 1)"""
     print("\n=== Testing Obstacle Avoidance Logic ===")
     print("This simulates the Roomba-like behavior from the lab requirements.")
     
@@ -108,7 +108,7 @@ def test_obstacle_avoidance(hw):
 def test_servo_scan(hw):
     """Test scanning environment with servo-mounted ultrasonic (for mapping)"""
     print("\n=== Testing Servo Scanning (for mapping) ===")
-    print("This simulates the scanning behavior needed for Step 4 mapping.")
+    print("This simulates the scanning behavior needed for Step 1.4 mapping.")
     
     # Scan from -90 to +90 degrees
     angles = range(-90, 91, 15)  # Every 15 degrees
@@ -186,8 +186,8 @@ def main():
         print("=" * 50)
         print("\nNext steps:")
         print("1. Review the test outputs above")
-        print("2. Implement your mapping algorithm (Step 4)")
-        print("3. Implement obstacle avoidance (Step 4)")
+        print("2. Implement your mapping algorithm (Step 1.4)")
+        print("3. Implement obstacle avoidance (Step 1.4)")
         print("4. Push to git and test on Raspberry Pi")
         
     except KeyboardInterrupt:

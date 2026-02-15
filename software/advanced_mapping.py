@@ -1,5 +1,5 @@
 """
-Part 2, Step 6: Advanced Mapping
+Part 2, Step 2.1: Advanced Mapping
 Implements non-probabilistic mapping using ultrasonic sensor scanning.
 
 Requirements:

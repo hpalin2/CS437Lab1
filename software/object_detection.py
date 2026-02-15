@@ -1,5 +1,5 @@
 """
-Part 2, Step 7: Object Detection
+Part 2, Step 2.2: Object Detection
 Detects objects using camera feed and reacts accordingly.
 
 Primary backend: MediaPipe Tasks Object Detector (recommended for 2026)
@@ -488,7 +488,7 @@ class ObjectDetector:
 class VisionOverride:
     """
     Vision override state for integration with mapping/routing.
-    Provides a clean interface for Step 7 to override Step 6/8 navigation.
+    Provides a clean interface for Step 2.2 to override Step 2.1/2.3 navigation.
     """
     
     def __init__(self):

@@ -1,5 +1,5 @@
 """
-Part 1, Step 4: Environment Scanning (Mapping) - Obstacle Avoidance
+Part 1, Step 1.4: Environment Scanning (Mapping) - Obstacle Avoidance
 Roomba-like behavior: detect obstacles, back up, turn, continue
 
 This implements the requirements from project.md:

@@ -8,7 +8,6 @@ This repository contains the software components for the IoT Lab 1 PiCar project
 - Raspberry Pi Camera Module
 - 64 GB microSD card
 
-**Note**: This lab documentation primarily references PiCar-4WD, but you're using PiCar-X. The core concepts are the same, but library installation and some API calls may differ. See hardware configuration section below.
 
 ## Quick Start
 
@@ -57,38 +56,24 @@ This repository contains the software components for the IoT Lab 1 PiCar project
 
 ## Hardware Configuration
 
-### Raspberry Pi 5 vs Pi 4
+### Raspberry Pi 5
 
-**Advantages of Pi 5:**
+**Advantages:**
 - More powerful CPU - better for object detection
 - More RAM (16 GB) - can handle larger models
 - Should achieve better than 1 FPS for object detection
 - Better overall performance
 
 **Compatibility:**
-- Most software works the same
-- Camera interface is compatible
-- GPIO pins are compatible
+- Camera interface uses libcamera
+- GPIO pins for hardware control
 - May need updated drivers/libraries
 
-### PiCar-X vs PiCar-4WD
-
-**Key Differences:**
-
-| Feature | PiCar-4WD | PiCar-X (Your Hardware) |
-|---------|-----------|-------------------------|
-| Library | `picar-4wd` | `picar-x` (different library) |
-| Installation | `sudo python3 setup.py install` | Follow PiCar-X docs |
-| Ultrasonic | Mounted on servo | May be fixed position |
-| Object Detection | TensorFlow Lite | MediaPipe (recommended) |
-| API | `picar_4wd` module | `picar_x` module (may differ) |
-
-**PiCar-X Specific Setup:**
+### PiCar-X Setup
 
 1. **Installation:**
    - Follow: https://docs.sunfounder.com/projects/picar-x/
-   - Different installation process than PiCar-4WD
-   - May use different package manager
+   - Use PiCar-X specific installation instructions
 
 2. **Ultrasonic Sensor:**
    - On PiCar-X, ultrasonic may be fixed (not on servo)
@@ -99,9 +84,8 @@ This repository contains the software components for the IoT Lab 1 PiCar project
 3. **Turning:**
    - PiCar-X can turn in place
    - Use opposing wheel directions
-   - May need different motor control than PiCar-4WD
 
-**✅ Your `software/hardware_mock.py` has been updated** - it now supports both PiCar-X and PiCar-4WD! The hardware abstraction layer automatically detects which library is installed and provides a unified interface.
+**✅ Your `software/hardware_mock.py`** - The hardware abstraction layer automatically detects your platform and provides a unified interface for PiCar-X.
 
 ## Installation & Setup
 
@@ -164,7 +148,7 @@ This repository contains the software components for the IoT Lab 1 PiCar project
    - There's enough space around it
    - You're ready to stop it if needed (Ctrl+C)
 
-## Object Detection Setup (Step 7)
+## Object Detection Setup (Step 2.2)
 
 ### Overview
 
@@ -320,12 +304,11 @@ For Raspberry Pi 5, `efficientdet_lite0` or `lite1` are recommended for ~1 FPS t
 ### ✅ Completed Setup
 - ✅ Hardware mock system for PC development
 - ✅ Test scripts for locomotion and sensors
-- ✅ picar-4wd repository cloned (for reference - you're using PiCar-X)
 - ✅ **PiCar-X installed and API compatibility verified**
-- ✅ Hardware abstraction layer (works with both PiCar-4WD and PiCar-X APIs)
+- ✅ Hardware abstraction layer for PiCar-X
 - ✅ Obstacle avoidance starter code (`software/obstacle_avoidance.py`)
 
-### ✅ Part 1, Step 4 - Obstacle Avoidance: COMPLETE
+### ✅ Part 1, Step 1.4 - Obstacle Avoidance: COMPLETE
 **Status**: ✅ Implemented and tested
 
 **Requirements** (from `project.md`):
@@ -338,7 +321,7 @@ For Raspberry Pi 5, `efficientdet_lite0` or `lite1` are recommended for ~1 FPS t
 - ✅ Tested on laptop with mocks
 - ✅ Ready for deployment to Pi
 
-### ✅ Part 2, Step 6 - Advanced Mapping: COMPLETE & CORRECTED
+### ✅ Part 2, Step 2.1 - Advanced Mapping: COMPLETE & CORRECTED
 **Status**: ✅ Implemented, tested, and corrected based on feedback
 
 **Requirements** (from `project.md`):
@@ -366,10 +349,10 @@ For Raspberry Pi 5, `efficientdet_lite0` or `lite1` are recommended for ~1 FPS t
 
 **Next actions**:
 1. Test on Pi with real hardware
-2. Integrate with A* routing (Step 8)
+2. Integrate with A* routing (Step 2.3)
 3. Add map visualization with OpenCV (optional enhancement)
 
-### ✅ Part 2, Step 7 - Object Detection: COMPLETE
+### ✅ Part 2, Step 2.2 - Object Detection: COMPLETE
 **Status**: ✅ Implemented with MediaPipe Tasks Object Detector
 
 **What's done**:
@@ -383,27 +366,27 @@ For Raspberry Pi 5, `efficientdet_lite0` or `lite1` are recommended for ~1 FPS t
 
 ### 📋 Upcoming Tasks
 
-**Part 1 (After Step 4)**:
-- Step 5: Set up obstacle course and test driving (needs Pi + real hardware)
+**Part 1 (After Step 1.4)**:
+- Step 1.5: Set up obstacle course and test driving (needs Pi + real hardware)
 - Create demo video and report
 
-**Part 2 (Can develop on laptop NOW - no need to wait for Step 5)**:
-- Step 6: Advanced mapping with numpy arrays ✅ **COMPLETE**
-- Step 7: Object detection with MediaPipe ✅ **COMPLETE**
-- Step 8: A* routing algorithm ⏭️ **Next** - Can develop on laptop now
-- Step 9: Full self-driving integration (needs Pi for final testing)
+**Part 2 (Can develop on laptop NOW - no need to wait for Step 1.5)**:
+- Step 2.1: Advanced mapping with numpy arrays ✅ **COMPLETE**
+- Step 2.2: Object detection with MediaPipe ✅ **COMPLETE**
+- Step 2.3: A* routing algorithm ⏭️ **Next** - Can develop on laptop now
+- Step 2.4: Full self-driving integration (needs Pi for final testing)
 
-**Important**: You can develop Steps 6-8 on your laptop **right now** without completing Step 5. These are algorithm/logic tasks that work with mocks. Step 5 is just testing Part 1 on real hardware, which is separate from developing Part 2 algorithms.
+**Important**: You can develop Steps 2.1-2.3 on your laptop **right now** without completing Step 1.5. These are algorithm/logic tasks that work with mocks. Step 1.5 is just testing Part 1 on real hardware, which is separate from developing Part 2 algorithms.
 
 ## Project Structure
 
 ```
 .
 ├── software/                    # All code files
-│   ├── advanced_mapping.py      # Part 2, Step 6 - Advanced mapping
-│   ├── object_detection.py      # Part 2, Step 7 - Object detection
+│   ├── advanced_mapping.py      # Part 2, Step 2.1 - Advanced mapping
+│   ├── object_detection.py      # Part 2, Step 2.2 - Object detection
 │   ├── hardware_mock.py          # Hardware abstraction layer
-│   ├── obstacle_avoidance.py    # Part 1, Step 4 - Obstacle avoidance
+│   ├── obstacle_avoidance.py    # Part 1, Step 1.4 - Obstacle avoidance
 │   ├── test_locomotion.py       # Locomotion testing
 │   ├── download_model.py        # Model download script
 │   └── download_model.sh        # Model download (bash)
@@ -424,18 +407,18 @@ For Raspberry Pi 5, `efficientdet_lite0` or `lite1` are recommended for ~1 FPS t
 ### What You Can Develop on Laptop vs Pi
 
 **✅ Can Develop on Laptop (Algorithm/Logic) - No Pi Needed**:
-- Step 4: Obstacle avoidance logic ✅
-- Step 6: Advanced mapping algorithm (numpy arrays) ✅
-- Step 7: Object detection code structure ✅
-- Step 8: A* routing algorithm ⏭️
+- Step 1.4: Obstacle avoidance logic ✅
+- Step 2.1: Advanced mapping algorithm (numpy arrays) ✅
+- Step 2.2: Object detection code structure ✅
+- Step 2.3: A* routing algorithm ⏭️
 - All Python logic and algorithms
 
 **⚠️ Needs Pi (Hardware-Specific)**:
-- Step 5: Actual driving test (needs real car) - **Optional before Part 2**
-- Step 7: Object detection testing (needs camera)
-- Step 9: Final integration testing
+- Step 1.5: Actual driving test (needs real car) - **Optional before Part 2**
+- Step 2.2: Object detection testing (needs camera)
+- Step 2.4: Final integration testing
 
-**Key Point**: You don't need to complete Step 5 before starting Part 2 development. Steps 6-8 are independent algorithms you can develop on your laptop using mocks. Step 5 is just testing Part 1 on real hardware.
+**Key Point**: You don't need to complete Step 1.5 before starting Part 2 development. Steps 2.1-2.3 are independent algorithms you can develop on your laptop using mocks. Step 1.5 is just testing Part 1 on real hardware.
 
 ## Quick Commands
 
@@ -468,11 +451,11 @@ git push
 
 ### On Raspberry Pi 5:
 - **Camera not working**: Ensure you're using `libcamera` commands, not old `raspistill`
-- **GPIO issues**: Pi 5 GPIO is compatible but may need updated libraries
-- **Performance**: Pi 5 should perform better - if slower, check thermal throttling
-- **Library not found**: Make sure you installed PiCar-X library, not PiCar-4WD
+- **GPIO issues**: Pi 5 GPIO may need updated libraries
+- **Performance**: Pi 5 should perform well - if slower, check thermal throttling
+- **Library not found**: Make sure you installed PiCar-X library
 - **Ultrasonic can't scan**: Mount it on camera pan servo
-- **Object detection fails**: Use MediaPipe (recommended) instead of TensorFlow Lite
+- **Object detection fails**: Use MediaPipe (recommended)
 - **Motors not working**: Check PiCar-X specific motor control API
 - **Model not found**: Run `python3 download_model.py` in software folder
 - **Low FPS**: Reduce frame resolution, skip frames, use smaller model
@@ -494,7 +477,6 @@ For a detailed explanation of how the project works, see **`SYSTEM_ARCHITECTURE.
 - **PiCar-X Documentation**: https://docs.sunfounder.com/projects/picar-x/
 - **Raspberry Pi 5 Docs**: https://www.raspberrypi.com/documentation/
 - **MediaPipe Object Detection**: https://ai.google.dev/edge/mediapipe/solutions/vision/object_detector/python
-- **PiCar-4WD Reference**: https://github.com/sunfounder/picar-4wd (for understanding, not your hardware)
 
 ## Notes
 
@@ -502,8 +484,7 @@ For a detailed explanation of how the project works, see **`SYSTEM_ARCHITECTURE.
 - On PC: All hardware calls are simulated (printed to console)
 - On Pi: Real hardware is used via picar-x library
 - This allows you to develop and test logic on PC before deploying to Pi
-- **You don't need `picar-4wd/setup.py` on your laptop** - it's only for Raspberry Pi (configures GPIO/I2C/SPI)
-- **You can develop Part 2 (Steps 6-8) on laptop without completing Step 5** - they're independent algorithm tasks
+- **You can develop Part 2 (Steps 2.1-2.3) on laptop without completing Step 1.5** - they're independent algorithm tasks
 
 ---
 
