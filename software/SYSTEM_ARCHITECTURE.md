@@ -53,7 +53,7 @@ The PiCar uses several sensors to perceive its environment:
 
 ## 2. Data Processing Pipeline
 
-### Part 1: Basic Obstacle Avoidance
+### Part 1: Enhanced Obstacle Avoidance
 
 ```
 ┌─────────────┐
@@ -63,22 +63,48 @@ The PiCar uses several sensors to perceive its environment:
        │
        ▼
 ┌─────────────────┐
-│ Simple Threshold│ → Compare: distance < 20cm?
-│   Comparison    │
+│ Median Filter   │ → 5-sample window for noise reduction
+│ (5 samples)     │
 └──────┬──────────┘
        │
-       ├─ YES → Stop → Back up → Turn → Continue
+       ▼
+┌─────────────────┐
+│ Emergency Check │ → Raw reading < 5cm? (bypasses filter)
+│                 │
+└──────┬──────────┘
        │
-       └─ NO  → Continue forward
+       ├─ YES → Emergency stop → Avoidance maneuver
+       │
+       ▼
+┌─────────────────┐
+│ Threshold Check │ → Filtered distance < 15cm?
+│ + Slowdown Zone │ → 15-30cm: Gradual speed reduction
+└──────┬──────────┘
+       │
+       ├─ YES → Stop → Back up → Turn (with direction memory) → Continue
+       │
+       └─ NO  → Continue forward (variable speed based on distance)
 ```
 
 **Processing Steps**:
-1. **Read sensor**: Get distance from ultrasonic sensor
-2. **Threshold check**: `if distance < OBSTACLE_THRESHOLD`
-3. **Action decision**: Simple if/else logic
-4. **Motor control**: Execute movement commands
+1. **Read sensor**: Get distance from ultrasonic sensor (with validation)
+2. **Median filtering**: 5-sample sliding window for noise reduction
+3. **Emergency stop**: Raw reading < 5cm bypasses filter for immediate stop
+4. **Slowdown zone**: Gradual speed reduction between 15-30cm (30% → 15% power)
+5. **Threshold check**: `if filtered_distance < OBSTACLE_THRESHOLD (15cm)`
+6. **Direction memory**: Reuses successful turn directions, flips on failure
+7. **Turn escalation**: Increases turn duration when repeatedly stuck
+8. **Motor control**: Execute movement commands with proper sequencing
 
-**Algorithm**: Simple reactive control (no mapping, no planning)
+**Enhanced Features**:
+- **Emergency stop**: Bypasses filter for dangerously close readings (<5cm)
+- **Slowdown zone**: Gradual speed reduction (30% → 15%) as approaching obstacles
+- **Direction memory**: Remembers and reuses successful turn directions
+- **Turn escalation**: Increases turn duration (up to 1.5s) when stuck repeatedly
+- **Bad-read failsafe**: Stops if sensor fails 5 consecutive times while moving
+- **5-sample median filter**: Better noise rejection than 3-sample
+
+**Algorithm**: Enhanced reactive control with adaptive behavior (no mapping, no planning)
 
 ---
 
@@ -226,23 +252,47 @@ The PiCar uses several sensors to perceive its environment:
 
 ### Part 1 Algorithms
 
-#### **Simple Reactive Control** (Step 1.4)
-- **Location**: `obstacle_avoidance.py`
-- **Algorithm**: Threshold-based reactive control
+#### **Enhanced Reactive Control** (Step 1.4)
+- **Location**: `navigation.py`
+- **Algorithm**: Threshold-based reactive control with adaptive features
 - **Complexity**: O(1) per iteration
-- **Input**: Single distance reading
-- **Output**: Motor commands (forward/backward/turn/stop)
+- **Input**: Single distance reading (with median filtering)
+- **Output**: Motor commands (forward/backward/turn/stop) with variable speed
+
+**Enhanced Features**:
+- Emergency stop bypass (raw < 5cm)
+- Slowdown zone (gradual speed reduction 15-30cm)
+- Direction memory (reuses successful turns)
+- Turn escalation (increases turn duration when stuck)
+- 5-sample median filter
+- Bad-read failsafe
 
 **Pseudocode**:
 ```
 while True:
-    distance = ultrasonic.read()
-    if distance < threshold:
+    raw_distance = ultrasonic.read()
+    filtered_distance = median_filter(raw_distance)  # 5-sample window
+    
+    # Emergency stop (bypasses filter)
+    if raw_distance < 5cm:
         stop()
         backup()
-        turn(random_direction)
+        direction = choose_turn_with_memory()
+        turn(direction, escalated_duration)
+        continue
+    
+    # Slowdown zone
+    if 15cm < filtered_distance < 30cm:
+        speed = interpolate_speed(filtered_distance)  # 30% → 15%
+    
+    # Obstacle detection
+    if filtered_distance < 15cm:
+        stop()
+        backup()
+        direction = choose_turn_with_memory()  # Reuses successful directions
+        turn(direction, escalated_duration)
     else:
-        forward()
+        forward(speed)  # Variable speed based on distance
 ```
 
 ---
@@ -250,7 +300,7 @@ while True:
 ### Part 2 Algorithms
 
 #### **Non-Probabilistic Mapping** (Step 2.1)
-- **Location**: `advanced_mapping.py` (to be created)
+- **Location**: `advanced_mapping.py`
 - **Algorithm**: Polar-to-Cartesian conversion + grid mapping
 - **Complexity**: O(n) where n = number of scan angles
 - **Input**: Array of (angle, distance) pairs
@@ -264,7 +314,7 @@ while True:
 3. **Interpolation**: Fill gaps between scan points
 
 #### **Object Detection** (Step 2.2)
-- **Location**: `object_detection.py` (to be created)
+- **Location**: `object_detection.py`
 - **Algorithm**: Deep learning CNN (Convolutional Neural Network)
 - **Model**: Pre-trained TensorFlow Lite model (e.g., COCO)
 - **Complexity**: O(W×H×C) where W×H = image size, C = channels
@@ -277,7 +327,7 @@ while True:
 3. Post-processing (filtering, NMS)
 
 #### **A* Pathfinding** (Step 2.3)
-- **Location**: `astar_routing.py` (to be created)
+- **Location**: `astar_routing.py`
 - **Algorithm**: A* (A-star) graph search
 - **Complexity**: O(b^d) worst case, but much better with good heuristic
 - **Input**: Start position, goal position, occupancy map
@@ -295,6 +345,19 @@ where:
 - Open set: Priority queue (min-heap) of nodes to explore
 - Closed set: Set of explored nodes
 - Came from: Dictionary tracking path
+
+A\* search on the 100×100 occupancy grid with Euclidean distance heuristic
+4-connected grid movement (up/down/left/right)
+Priority queue (min-heap) with tie-breaking counter
+Key features:
+inflate_obstacles() — dilates obstacles by a configurable clearance radius so the car doesn't clip corners
+astar() — returns the full cell-by-cell path; allow_unknown flag lets it traverse unexplored cells
+simplify_path() — removes colinear intermediate waypoints so the car only turns when direction changes
+PathFollower — drives the car along waypoints, integrating with:
+AdvancedMapper for periodic rescanning
+ObjectDetector + VisionOverride for stopping on person/stop sign detection
+visualize_path_ascii() — compact ASCII view of the map with path overlay
+Standalone tests — synthetic map test + integration test with mapper, both pass in mock mode
 
 ---
 
@@ -411,7 +474,7 @@ where:
 4. **Servo** → Angle control → Scanning → Mapping
 
 **Algorithms**:
-- Part 1: Simple reactive control
+- Part 1: Enhanced reactive control (with emergency stop, slowdown zone, direction memory, turn escalation)
 - Part 2: Mapping (coordinate transform), Object detection (CNN), Pathfinding (A*)
 
-**Integration**: Combine all sensors and algorithms for full self-driving capability.
+**Integration** (`self_driving.py`): Combine all sensors and algorithms for full self-driving capability.

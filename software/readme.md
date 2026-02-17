@@ -306,7 +306,7 @@ For Raspberry Pi 5, `efficientdet_lite0` or `lite1` are recommended for ~1 FPS t
 - ✅ Test scripts for locomotion and sensors
 - ✅ **PiCar-X installed and API compatibility verified**
 - ✅ Hardware abstraction layer for PiCar-X
-- ✅ Obstacle avoidance starter code (`software/obstacle_avoidance.py`)
+- ✅ Obstacle avoidance code (`software/navigation.py`) - Enhanced version with emergency stop, slowdown zone, direction memory, and turn escalation
 
 ### ✅ Part 1, Step 1.4 - Obstacle Avoidance: COMPLETE
 **Status**: ✅ Implemented and tested
@@ -317,7 +317,10 @@ For Raspberry Pi 5, `efficientdet_lite0` or `lite1` are recommended for ~1 FPS t
 - ✅ Roomba-like behavior
 
 **What's done**:
-- ✅ Basic obstacle avoidance code structure created
+- ✅ Enhanced obstacle avoidance implementation (`navigation.py`)
+- ✅ **Safety features**: Emergency stop (bypasses filter for <5cm readings), slowdown zone (gradual speed reduction 15-30cm), consecutive bad-read failsafe
+- ✅ **Adaptive behavior**: Direction memory (reuses successful turns), turn escalation (increases turn duration when stuck), 5-sample median filter
+- ✅ **Better logging**: Python logging module with timestamps
 - ✅ Tested on laptop with mocks
 - ✅ Ready for deployment to Pi
 
@@ -364,19 +367,38 @@ For Raspberry Pi 5, `efficientdet_lite0` or `lite1` are recommended for ~1 FPS t
 - ✅ Viewer window with bounding boxes
 - ✅ Ready for deployment to Pi
 
-### 📋 Upcoming Tasks
+### ✅ Part 2, Step 2.3 - A* Routing: COMPLETE
+**Status**: ✅ Implemented and tested
 
-**Part 1 (After Step 1.4)**:
-- Step 1.5: Set up obstacle course and test driving (needs Pi + real hardware)
-- Create demo video and report
+**What's done**:
+- ✅ `software/astar_routing.py` with full A* pathfinding
+- ✅ Obstacle inflation (configurable clearance radius)
+- ✅ Path simplification (removes colinear waypoints)
+- ✅ PathFollower class integrates with mapping + vision
+- ✅ Periodic rescan + replan during navigation
+- ✅ ASCII path visualization
+- ✅ Standalone test + integration test with mapper
+- ✅ Tested on laptop with mocks
 
-**Part 2 (Can develop on laptop NOW - no need to wait for Step 1.5)**:
-- Step 2.1: Advanced mapping with numpy arrays ✅ **COMPLETE**
-- Step 2.2: Object detection with MediaPipe ✅ **COMPLETE**
-- Step 2.3: A* routing algorithm ⏭️ **Next** - Can develop on laptop now
-- Step 2.4: Full self-driving integration (needs Pi for final testing)
+### ✅ Part 2, Step 2.4 - Full Self-Driving: COMPLETE
+**Status**: ✅ Implemented and tested
 
-**Important**: You can develop Steps 2.1-2.3 on your laptop **right now** without completing Step 1.5. These are algorithm/logic tasks that work with mocks. Step 1.5 is just testing Part 1 on real hardware, which is separate from developing Part 2 algorithms.
+**What's done**:
+- ✅ `software/self_driving.py` — main controller
+- ✅ Integrates mapping (2.1), object detection (2.2), and A* routing (2.3)
+- ✅ Scan → Plan → Follow → Rescan loop
+- ✅ Vision override (stops for person / stop sign, then resumes)
+- ✅ CLI arguments (--goal, --clearance, --rescan, --max-time, --detector)
+- ✅ Session summary with stats
+- ✅ Tested on laptop with mocks
+- ✅ Ready for deployment to Pi
+
+### 📋 Remaining Tasks
+
+**Needs Pi (hardware-specific)**:
+- Step 1.5: Set up obstacle course and test driving
+- Final integration testing with real sensors / camera
+- Create demo videos and reports
 
 ## Project Structure
 
@@ -385,8 +407,10 @@ For Raspberry Pi 5, `efficientdet_lite0` or `lite1` are recommended for ~1 FPS t
 ├── software/                    # All code files
 │   ├── advanced_mapping.py      # Part 2, Step 2.1 - Advanced mapping
 │   ├── object_detection.py      # Part 2, Step 2.2 - Object detection
+│   ├── astar_routing.py         # Part 2, Step 2.3 - A* pathfinding
+│   ├── self_driving.py          # Part 2, Step 2.4 - Full self-driving controller
 │   ├── hardware_mock.py          # Hardware abstraction layer
-│   ├── obstacle_avoidance.py    # Part 1, Step 1.4 - Obstacle avoidance
+│   ├── navigation.py            # Part 1, Step 1.4 - Obstacle avoidance (enhanced)
 │   ├── test_locomotion.py       # Locomotion testing
 │   ├── download_model.py        # Model download script
 │   └── download_model.sh        # Model download (bash)
@@ -425,7 +449,7 @@ For Raspberry Pi 5, `efficientdet_lite0` or `lite1` are recommended for ~1 FPS t
 ```bash
 # Test obstacle avoidance on laptop
 cd software
-python obstacle_avoidance.py
+python navigation.py
 
 # Test basic locomotion
 python test_locomotion.py
@@ -435,6 +459,15 @@ python object_detection.py --viewer
 
 # Test advanced mapping
 python advanced_mapping.py
+
+# Test A* routing (standalone + integration with mapper)
+python astar_routing.py
+
+# Test full self-driving (mock mode, 15s timeout)
+python self_driving.py
+
+# Full self-driving with custom goal
+python self_driving.py --goal 70,65 --rescan 3 --clearance 4
 
 # When ready, commit and push
 git add .

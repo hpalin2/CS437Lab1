@@ -4,4 +4,5 @@
 
 numpy>=1.21.0
 opencv-python>=4.5.0
-# Add other dependencies as needed for your development
+mediapipe>=0.10.0       # Object detection (Step 2.2)
+# picamera2              # Only needed on Raspberry Pi (camera capture)
