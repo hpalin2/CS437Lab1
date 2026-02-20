@@ -562,7 +562,8 @@ def visualize_detections(frame, detections, fps=0.0, override_status=None):
     if not OPENCV_AVAILABLE:
         return frame
     
-    annotated = frame.copy()
+    annotated = np.array(frame, dtype=np.uint8)
+    annotated = np.ascontiguousarray(annotated)
     
     # Draw FPS
     cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 25),
