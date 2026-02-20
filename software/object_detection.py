@@ -158,7 +158,7 @@ class MediaPipeDetector:
         base_options = python.BaseOptions(model_asset_path=model_path)
         options = vision.ObjectDetectorOptions(
             base_options=base_options,
-            score_threshold=0.5,
+            score_threshold=0.3,  # Lowered from 0.5 for Pi camera compatibility
             max_results=5,
             running_mode=vision.RunningMode.IMAGE,
         )
