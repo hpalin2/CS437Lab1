@@ -6,7 +6,26 @@ Diagnostic script to identify why stop signs aren't being detected.
 import cv2
 import numpy as np
 import time
-from object_detection import ObjectDetector, normalize_label
+import os
+
+# Try to import the project's object detector; if unavailable, degrade gracefully
+try:
+    from object_detection import ObjectDetector, normalize_label
+except Exception:
+    ObjectDetector = None
+    def normalize_label(x):
+        return x
+
+# Try to import Picamera2; if libcamera isn't installed we'll fall back to OpenCV
+PICAMERA2_AVAILABLE = False
+try:
+    from picamera2 import Picamera2
+    from pixmap import PixelFormat
+    PICAMERA2_AVAILABLE = True
+except Exception:
+    Picamera2 = None
+    PixelFormat = None
+    PICAMERA2_AVAILABLE = False
 
 def test_camera():
     """Test if camera is working and returning valid frames."""
@@ -14,38 +33,52 @@ def test_camera():
     print("CAMERA DIAGNOSTIC")
     print("=" * 60)
     
-    try:
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            print("[ERROR] Cannot open camera 0")
-            return False
-        
-        print("[OK] Camera opened successfully")
-        
-        # Try to capture frames
-        print("\nCapturing 5 frames...")
-        for i in range(5):
-            ret, frame = cap.read()
-            if ret and frame is not None:
-                height, width = frame.shape[:2]
-                # Check if frame is mostly black/empty
-                mean_brightness = np.mean(frame)
-                print(f"  Frame {i+1}: {width}x{height}, brightness: {mean_brightness:.1f}")
-                
-                if mean_brightness < 10:
-                    print(f"    [WARNING] Frame is very dark (brightness < 10)")
+    # Prefer Picamera2 when available
+    if PICAMERA2_AVAILABLE:
+        try:
+            picam2 = Picamera2()
+            picam2.configure(picam2.create_video_configuration(main={"format": "RGB888", "size": (640, 480)}))
+            picam2.start()
+
+            frame = picam2.capture_array()
+            picam2.stop()
+
+            if frame is None:
+                print("[ERROR] Picamera2 returned no frame")
+                # fall through to OpenCV fallback
             else:
-                print(f"  Frame {i+1}: FAILED to capture")
-                cap.release()
-                return False
-            
-            time.sleep(0.2)
-        
+                print("[OK] Picamera2 frame captured")
+                return True
+
+        except Exception as e:
+            print(f"[WARN] Picamera2 capture failed: {e}")
+
+    # OpenCV / V4L2 fallback
+    device = os.environ.get('CAMERA_DEVICE', '/dev/video0')
+    print(f"[INFO] Trying OpenCV V4L2 device: {device}")
+    try:
+        # If device is a path, use it directly with cv2.CAP_V4L2; otherwise try int()
+        try:
+            cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
+        except Exception:
+            cap = cv2.VideoCapture(int(device))
+
+        if not cap.isOpened():
+            print(f"[ERROR] Cannot open video device {device}")
+            return False
+
+        ret, frame = cap.read()
         cap.release()
+
+        if not ret or frame is None:
+            print("[ERROR] OpenCV failed to grab frame")
+            return False
+
+        print("[OK] OpenCV frame captured")
         return True
-    
+
     except Exception as e:
-        print(f"[ERROR] Camera test failed: {e}")
+        print(f"[ERROR] OpenCV camera test failed: {e}")
         return False
 
 
@@ -149,49 +182,90 @@ def test_live_detection_with_diagnostics():
     print("\nCapturing 10 frames and running detection...\n")
     
     try:
-        detector = ObjectDetector(method='mediapipe')
-        
+        detector = None
+        if ObjectDetector is not None:
+            try:
+                detector = ObjectDetector(method='mediapipe')
+            except Exception as e:
+                print(f"[WARN] Could not initialize ObjectDetector: {e}")
+
         frame_count = 0
         detected_any = False
-        
-        for i in range(10):
-            frame = detector.get_frame()
-            if frame is None:
-                print(f"Frame {i+1}: FAILED to get frame")
-                continue
-            
-            # Check frame properties
-            height, width = frame.shape[:2]
-            brightness = np.mean(frame)
-            max_pixel = np.max(frame)
-            
-            print(f"Frame {i+1}:")
-            print(f"  Size: {width}x{height}, Brightness: {brightness:.1f}, Max pixel: {max_pixel}")
-            
-            # Run detection
-            detections = detector.detect_objects(frame)
-            
-            if detections:
-                print(f"  >>> DETECTED {len(detections)} object(s):")
-                detected_any = True
-                for det in detections:
-                    print(f"      - {det['class']}: {det['confidence']:.2f}")
-            else:
-                print(f"  No detections")
-            
-            time.sleep(0.3)
-        
-        detector.cleanup()
-        
+
+        if detector is not None:
+            # Use detector's frame source
+            for i in range(10):
+                frame = detector.get_frame()
+                if frame is None:
+                    print(f"Frame {i+1}: FAILED to get frame")
+                    continue
+
+                height, width = frame.shape[:2]
+                brightness = np.mean(frame)
+                max_pixel = np.max(frame)
+
+                print(f"Frame {i+1}:")
+                print(f"  Size: {width}x{height}, Brightness: {brightness:.1f}, Max pixel: {max_pixel}")
+
+                detections = detector.detect_objects(frame)
+                if detections:
+                    print(f"  >>> DETECTED {len(detections)} object(s):")
+                    detected_any = True
+                    for det in detections:
+                        print(f"      - {det['class']}: {det['confidence']:.2f}")
+                else:
+                    print("  No detections")
+
+                time.sleep(0.3)
+
+            try:
+                detector.cleanup()
+            except Exception:
+                pass
+
+        else:
+            # No ObjectDetector available — just capture frames with OpenCV and report diagnostics
+            device = os.environ.get('CAMERA_DEVICE', '/dev/video0')
+            print(f"[INFO] No ObjectDetector; sampling frames from {device} using OpenCV")
+            cap = None
+            try:
+                cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
+                if not cap.isOpened():
+                    print(f"[ERROR] Cannot open video device {device}")
+                    return False
+
+                for i in range(10):
+                    ret, frame = cap.read()
+                    if not ret or frame is None:
+                        print(f"Frame {i+1}: FAILED to capture frame")
+                        continue
+
+                    height, width = frame.shape[:2]
+                    brightness = np.mean(frame)
+                    max_pixel = np.max(frame)
+                    print(f"Frame {i+1}:")
+                    print(f"  Size: {width}x{height}, Brightness: {brightness:.1f}, Max pixel: {max_pixel}")
+                    print("  Skipping detection (ObjectDetector not available)")
+                    time.sleep(0.3)
+
+                return False
+
+            except Exception as e:
+                print(f"[ERROR] OpenCV live capture failed: {e}")
+                return False
+            finally:
+                if cap is not None:
+                    cap.release()
+
         if not detected_any:
             print("\n[WARNING] No objects detected in any frame!")
             print("Possible causes:")
             print("  1. Camera returns blank/dark frames")
             print("  2. Most objects have confidence < 0.5 (model threshold)")
             print("  3. Model not working properly")
-        
+
         return detected_any
-    
+
     except Exception as e:
         print(f"[ERROR] Live detection test failed: {e}")
         import traceback
