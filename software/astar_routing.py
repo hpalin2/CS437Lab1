@@ -31,7 +31,8 @@ from advanced_mapping import (
 # ---------------------------------------------------------------------------
 CLEARANCE_RADIUS = 3       # cells around each obstacle that are also blocked
 RESCAN_EVERY_N_STEPS = 5   # rescan environment every N steps along the path
-MOVE_STEP_CM = 5           # distance per step when following path (cm)
+MOVE_STEP_CM = 10          # distance per step when following path (cm)
+                           # With CELL_SIZE_CM=2, each grid cell = 2cm; 10cm ≈ 5 cells
 TURN_SPEED = 30            # motor power for turning (%)
 FORWARD_SPEED = 25         # motor power for forward steps (%)
 STEP_DURATION = 0.4        # seconds to drive per step
@@ -403,7 +404,7 @@ class PathFollower:
         self.current_heading = (self.current_heading + delta_deg) % 360
 
     def _drive_forward_one_cell(self):
-        """Drive forward roughly one map cell (1 cm)."""
+        """Drive forward roughly one map cell (CELL_SIZE_CM = 2 cm)."""
         self.hw['forward'](FORWARD_SPEED)
         time.sleep(STEP_DURATION)
         self.hw['stop']()

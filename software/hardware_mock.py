@@ -122,9 +122,56 @@ def get_hardware():
     """
     if is_raspberry_pi():
         # Try PiCar-X first (your hardware)
+        # Check system Python paths for picarx (may be installed for Python 3.13)
         try:
-            from picarx import Picarx
-            px = Picarx()
+            import sys
+            import warnings
+            # Suppress pyaudio warnings (not critical for basic functionality)
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=UserWarning)
+                # Try to import picarx from venv first, then fall back to system paths
+                try:
+                    from picarx import Picarx
+                except ImportError as e:
+                    if 'pyaudio' in str(e).lower() or '_portaudio' in str(e).lower():
+                        # pyaudio error in venv's picarx - set env flag and retry
+                        import os
+                        os.environ['PYAUDIO_IGNORE_ERRORS'] = '1'
+                        from picarx import Picarx
+                    else:
+                        # picarx not in venv - try system package paths as fallback
+                        system_paths = [
+                            '/usr/local/lib/python3.13/dist-packages',
+                            '/usr/local/lib/python3.12/dist-packages',
+                            '/usr/local/lib/python3.11/dist-packages',
+                            '/usr/lib/python3/dist-packages',
+                        ]
+                        for path in system_paths:
+                            if path not in sys.path:
+                                sys.path.append(path)  # append, not insert, to preserve venv priority
+                        try:
+                            from picarx import Picarx
+                        except ImportError as e2:
+                            if 'pyaudio' in str(e2).lower() or '_portaudio' in str(e2).lower():
+                                import os
+                                os.environ['PYAUDIO_IGNORE_ERRORS'] = '1'
+                                from picarx import Picarx
+                            else:
+                                raise
+                
+                # Try to create Picarx instance (may fail due to GPIO permissions)
+                try:
+                    px = Picarx()
+                except Exception as gpio_error:
+                    # GPIO access error - this is OK, we can still use the module
+                    # The hardware_mock will handle this gracefully
+                    if 'gpio' in str(gpio_error).lower() or 'pin factory' in str(gpio_error).lower():
+                        print(f"[INFO] picar-x found but GPIO access issue: {gpio_error}")
+                        print("[INFO] This is normal - hardware access requires GPIO permissions")
+                        print("[INFO] For now, continuing with mock hardware")
+                        raise ImportError("GPIO access required for picar-x")  # Will fall through to mocks
+                    else:
+                        raise
             
             # Create wrapper functions for PiCar-X
             # PiCar-X uses steering servo for turning, not direct turn functions

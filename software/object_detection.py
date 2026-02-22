@@ -16,8 +16,12 @@ Secondary backend: vilib (PiCar-X convenience features only)
 import time
 import os
 import sys
+import warnings
 import numpy as np
 from hardware_mock import is_raspberry_pi
+
+# Suppress protobuf deprecation warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='google.protobuf')
 
 # Try to import detection libraries
 try:
@@ -46,6 +50,16 @@ try:
     PICAMERA2_AVAILABLE = True
 except ImportError:
     PICAMERA2_AVAILABLE = False
+
+# Check for rpicam command-line tools (Raspberry Pi 5 workaround)
+RPICAM_AVAILABLE = False
+try:
+    import subprocess
+    result = subprocess.run(['which', 'rpicam-vid'], 
+                          capture_output=True, timeout=1)
+    RPICAM_AVAILABLE = (result.returncode == 0)
+except:
+    RPICAM_AVAILABLE = False
 
 
 def normalize_label(label):
@@ -168,6 +182,8 @@ class MediaPipeDetector:
         self.camera = None
         self.camera_index = camera_index
         self.use_picamera2 = use_picamera2
+        self.use_rpicam = False
+        self.rpicam_process = None
         
         # Auto-detect camera backend
         if use_picamera2 is None:
@@ -190,10 +206,42 @@ class MediaPipeDetector:
         
         if not self.use_picamera2:
             # Use OpenCV for camera capture
-            self.camera = cv2.VideoCapture(camera_index)
+            # On Raspberry Pi 5, try V4L2 backend explicitly
+            if is_raspberry_pi():
+                # Try V4L2 backend first
+                self.camera = cv2.VideoCapture(camera_index, cv2.CAP_V4L2)
+                if not self.camera.isOpened():
+                    # Fallback to default backend
+                    self.camera = cv2.VideoCapture(camera_index)
+            else:
+                self.camera = cv2.VideoCapture(camera_index)
+            
             if not self.camera.isOpened():
                 raise RuntimeError(f"Could not open camera {camera_index}")
-            print(f"[INFO] Using OpenCV for camera capture (index {camera_index})")
+            
+            # Set camera properties for better compatibility
+            self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.camera.set(cv2.CAP_PROP_FPS, 10)
+            
+            # Try to read a test frame to verify it works
+            import time
+            time.sleep(0.2)  # Give camera time to initialize
+            ret, test_frame = self.camera.read()
+            if not ret or test_frame is None:
+                # OpenCV can't read frames - try rpicam-vid workaround on Raspberry Pi
+                if is_raspberry_pi() and RPICAM_AVAILABLE:
+                    print("[INFO] OpenCV cannot read frames, using rpicam-vid workaround")
+                    self.use_rpicam = True
+                    self.camera.release()
+                    self.camera = None
+                else:
+                    print(f"[WARNING] Camera opened but cannot read frames.")
+                    if is_raspberry_pi():
+                        print(f"[WARNING] On Raspberry Pi 5, you may need rpicam-vid or libcamera Python bindings")
+            
+            if not self.use_rpicam:
+                print(f"[INFO] Using OpenCV for camera capture (index {camera_index})")
         
         print(f"[INFO] MediaPipe detector initialized with model: {model_path}")
     
@@ -218,11 +266,57 @@ class MediaPipeDetector:
             except Exception as e:
                 print(f"[ERROR] Picamera2 capture failed: {e}")
                 return None
+        elif self.use_rpicam:
+            # Use rpicam-vid as workaround (captures single frame)
+            try:
+                import subprocess
+                import tempfile
+                import os
+                
+                # Create temp file for frame
+                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+                    tmp_path = tmp.name
+                
+                # Capture single frame using rpicam-vid
+                cmd = ['rpicam-vid', '--width', '640', '--height', '480', 
+                       '--nopreview', '--timeout', '100', '--output', tmp_path]
+                result = subprocess.run(cmd, capture_output=True, timeout=2)
+                
+                if result.returncode == 0 and os.path.exists(tmp_path):
+                    # Read the captured frame
+                    frame = cv2.imread(tmp_path)
+                    os.unlink(tmp_path)  # Clean up
+                    if frame is not None:
+                        return frame
+                
+                # If that failed, try rpicam-still instead
+                cmd = ['rpicam-still', '--width', '640', '--height', '480', 
+                       '--nopreview', '--timeout', '100', '--output', tmp_path]
+                result = subprocess.run(cmd, capture_output=True, timeout=2)
+                
+                if result.returncode == 0 and os.path.exists(tmp_path):
+                    frame = cv2.imread(tmp_path)
+                    os.unlink(tmp_path)
+                    return frame
+                
+                return None
+            except Exception as e:
+                print(f"[ERROR] rpicam capture failed: {e}")
+                return None
         else:
-            # OpenCV capture
-            ret, frame = self.camera.read()
-            if ret and frame is not None and frame.size > 0:
-                return frame
+            # OpenCV capture with retry logic
+            max_retries = 3
+            for attempt in range(max_retries):
+                ret, frame = self.camera.read()
+                if ret and frame is not None and frame.size > 0:
+                    return frame
+                # If first attempt fails, try to reinitialize
+                if attempt == 0 and not ret:
+                    import time
+                    time.sleep(0.1)
+                    # Try to set properties again
+                    self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             return None
     
     def detect_objects(self, frame=None):
@@ -302,6 +396,9 @@ class MediaPipeDetector:
             try:
                 self.camera.stop()
             except:
+                pass
+        elif self.use_rpicam:
+            # rpicam cleanup (subprocess handles it)
                 pass
         elif self.camera:
             try:

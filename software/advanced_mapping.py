@@ -17,14 +17,18 @@ import time
 from hardware_mock import get_hardware
 
 # Configuration
-MAP_SIZE = 100  # 100x100 grid (1cm per cell = 100cm x 100cm)
+MAP_SIZE = 100        # 100x100 grid (lab requirement: keep at 100)
+CELL_SIZE_CM = 2      # Each cell = 2cm → grid covers 200cm x 200cm (2m x 2m)
 MAP_CENTER = MAP_SIZE // 2  # Car starts at center (50, 50)
 SCAN_ANGLE_MIN = -90  # Minimum scan angle (degrees)
 SCAN_ANGLE_MAX = 90   # Maximum scan angle (degrees)
-SCAN_STEP = 15        # Degrees between scan points (15° = 13 points per scan)
-SERVO_DELAY = 0.1     # Time to wait for servo to move (seconds)
-MAX_DISTANCE = 100    # Maximum distance to consider (cm) - beyond this, ignore
-OBSTACLE_THRESHOLD = 80  # Distance threshold for marking obstacles (cm) - only mark if distance <= this
+SCAN_STEP = 5         # Degrees between scan points (5° = 37 points per scan)
+SERVO_STEP_DELAY = 0.02   # Seconds per 1° step during sweep (~20°/s — smooth but not sluggish)
+SERVO_SETTLE_TIME = 0.15  # Extra settle pause after arriving at each scan angle (seconds)
+MAX_DISTANCE = 200    # Maximum distance to consider (cm) - covers full 2m grid
+OBSTACLE_THRESHOLD = 180 # Distance threshold for marking obstacles (cm)
+SCAN_TILT_ANGLE = -2      # Tilt sensor slightly downward during scan (degrees, negative = down)
+                          # Compensates for upward servo tilt; tune via calibrate_servo.py
 
 # Occupancy states
 UNKNOWN = -1  # Not yet observed
@@ -90,9 +94,9 @@ class AdvancedMapper:
         # Math convention: positive = counterclockwise (left), so negate for right-positive
         total_angle_rad = math.radians(car_angle - angle_deg)
         
-        # Convert polar to Cartesian
-        x = car_x + distance_cm * math.cos(total_angle_rad)
-        y = car_y + distance_cm * math.sin(total_angle_rad)
+        # Convert polar to Cartesian (divide by CELL_SIZE_CM to convert cm → grid cells)
+        x = car_x + (distance_cm / CELL_SIZE_CM) * math.cos(total_angle_rad)
+        y = car_y + (distance_cm / CELL_SIZE_CM) * math.sin(total_angle_rad)
         
         # Check bounds (map_size is exclusive, so valid range is [0, map_size))
         x_int = int(round(x))
@@ -101,6 +105,18 @@ class AdvancedMapper:
             return (x_int, y_int)
         return None
     
+    def _sweep_servo(self, servo, from_angle, to_angle):
+        """
+        Smoothly sweep servo from from_angle to to_angle one degree at a time.
+        Always reads the servo's last-known position so there is no snapping.
+        """
+        if from_angle == to_angle:
+            return
+        direction = 1 if to_angle > from_angle else -1
+        for a in range(from_angle + direction, to_angle + direction, direction):
+            servo.set_angle(a)
+            time.sleep(SERVO_STEP_DELAY)
+
     def scan_environment(self, hw, angle_min=SCAN_ANGLE_MIN, angle_max=SCAN_ANGLE_MAX, 
                         step=SCAN_STEP, interpolate=True):
         """
@@ -118,34 +134,54 @@ class AdvancedMapper:
         """
         servo = hw['servo']
         us = hw['ultrasonic']
+        px = hw.get('px')  # PiCar-X instance for tilt control (None in mock mode)
         
         scan_data = []
-        angles = range(angle_min, angle_max + 1, step)
+        angles = list(range(angle_min, angle_max + 1, step))
         
+        # Apply tilt correction if running on real hardware
+        if px is not None:
+            px.set_cam_tilt_angle(SCAN_TILT_ANGLE)
+            time.sleep(0.2)
+            print(f"Tilt set to {SCAN_TILT_ANGLE}° (downward compensation)")
+
         print(f"Scanning from {angle_min}° to {angle_max}° (step: {step}°)...")
+
+        # Use the servo's last-known angle so we never snap to an assumed position.
+        # servo.angle is set by every set_angle() call in both real and mock wrappers.
+        current_angle = getattr(servo, 'angle', 0)
+
+        # Smoothly move to start of scan range
+        self._sweep_servo(servo, current_angle, angle_min)
+        current_angle = angle_min
+        time.sleep(SERVO_SETTLE_TIME)   # let vibration die before first reading
         
         for angle in angles:
-            # Set servo angle
-            servo.set_angle(angle)
-            time.sleep(SERVO_DELAY)  # Wait for servo to move
+            # Smoothly sweep to next measurement angle
+            self._sweep_servo(servo, current_angle, angle)
+            current_angle = angle
+            time.sleep(SERVO_SETTLE_TIME)  # settle before reading
+
+            # Take 3 readings and use median to reject outliers
+            raw = []
+            for _ in range(3):
+                d = us.get_distance() if hasattr(us, 'get_distance') else us.read()
+                if 0 < d < MAX_DISTANCE:
+                    raw.append(d)
+                time.sleep(0.05)
             
-            # Read distance
-            if hasattr(us, 'get_distance'):
-                distance = us.get_distance()
-            else:
-                distance = us.read()
-            
-            # Only add valid readings (skip invalid/no-return readings)
-            if 0 < distance < MAX_DISTANCE:
+            if raw:
+                distance = sorted(raw)[len(raw) // 2]  # median
                 scan_data.append((angle, distance))
-                print(f"  Angle {angle:3d}deg: {distance:5.1f} cm")
+                print(f"  Angle {angle:3d}deg: {distance:5.1f} cm  (from {len(raw)} valid reads)")
             else:
-                # Invalid reading - skip it (don't mark as obstacle)
-                print(f"  Angle {angle:3d}deg: {distance:5.1f} cm (invalid, skipping)")
+                print(f"  Angle {angle:3d}deg:  no valid reading (skipping)")
         
-        # Return servo to center
-        servo.set_angle(0)
-        time.sleep(SERVO_DELAY)
+        # Smoothly return servo to center and restore tilt
+        self._sweep_servo(servo, current_angle, 0)
+        time.sleep(SERVO_SETTLE_TIME)
+        if px is not None:
+            px.set_cam_tilt_angle(0)
         
         # Store scan history
         self.scan_history = scan_data
@@ -317,7 +353,10 @@ class AdvancedMapper:
             print(line)
         
         print("=" * (self.map_size + 2))
-        print(f"Car position: ({self.car_x}, {self.car_y}), heading: {self.car_angle}deg")
+        real_x = (self.car_x - self.map_center) * CELL_SIZE_CM
+        real_y = (self.car_y - self.map_center) * CELL_SIZE_CM
+        print(f"Car position: grid({self.car_x}, {self.car_y}) = real({real_x}cm, {real_y}cm), heading: {self.car_angle}deg")
+        print(f"Grid: {self.map_size}x{self.map_size} cells @ {CELL_SIZE_CM}cm/cell = {self.map_size*CELL_SIZE_CM}cm x {self.map_size*CELL_SIZE_CM}cm coverage")
         print(f"Obstacles: {obstacles}, Free: {free_cells}, Unknown: {unknown_cells}")
         print()
     
@@ -337,10 +376,12 @@ class AdvancedMapper:
         self.car_angle = (self.car_angle + delta_angle_deg) % 360
         
         # Step 2: Update car position (translation in new heading direction)
+        # Divide by CELL_SIZE_CM to convert real-world cm → grid cells
         if distance_cm > 0:
             angle_rad = math.radians(self.car_angle)
-            self.car_x += int(round(distance_cm * math.cos(angle_rad)))
-            self.car_y += int(round(distance_cm * math.sin(angle_rad)))
+            cells = distance_cm / CELL_SIZE_CM
+            self.car_x += int(round(cells * math.cos(angle_rad)))
+            self.car_y += int(round(cells * math.sin(angle_rad)))
             
             # Keep within bounds
             self.car_x = max(0, min(self.map_size - 1, self.car_x))
@@ -362,14 +403,39 @@ class AdvancedMapper:
         print(f"Map loaded from {filename}")
 
 
-def test_mapping():
+def init_hardware():
+    """
+    Initialize hardware ONCE per session.
+    Call this at startup, then pass the returned hw dict to test_mapping().
+    Avoids repeated Picarx() instantiation which triggers reset_mcu() and
+    causes servos to snap to their MCU power-on default each time.
+    """
+    hw = get_hardware()
+    if not hw['is_mock']:
+        # reset_mcu() in Picarx.__init__ leaves servos in an unknown state.
+        # Do a slow sweep back to center so recovery is smooth, not abrupt.
+        px = hw['px']
+        servo = hw['servo']
+        print("[HW INIT] Slowly centering servos after MCU reset...")
+        for angle in range(20, -1, -1):   # gentle approach from +20° → 0°
+            px.set_cam_pan_angle(angle)
+            time.sleep(0.03)
+        servo.angle = 0
+        px.set_cam_tilt_angle(0)
+        time.sleep(0.3)
+        print("[HW INIT] Servos centred.")
+    return hw
+
+
+def test_mapping(hw=None):
     """Test the mapping system."""
     print("=" * 60)
     print("Advanced Mapping Test")
     print("=" * 60)
     
-    # Get hardware interface
-    hw = get_hardware()
+    # Accept a pre-initialised hw dict so Picarx() isn't recreated each run
+    if hw is None:
+        hw = init_hardware()
     
     if hw['is_mock']:
         print("[INFO] Running in MOCK mode (PC development)")
@@ -416,4 +482,7 @@ def test_mapping():
 
 
 if __name__ == "__main__":
-    mapper = test_mapping()
+    # Initialise hardware ONCE — avoids repeated MCU resets if you re-run
+    # test_mapping() multiple times in the same session.
+    hw = init_hardware()
+    mapper = test_mapping(hw)
