@@ -50,6 +50,8 @@ DODGE_BACKUP_SPEED = 30
 DODGE_BACKUP_TIME  = 0.5    # seconds to reverse
 DODGE_TURN_SPEED   = 30
 DODGE_TURN_TIME    = 0.5    # seconds to turn (alternates left / right)
+DODGE_TURN_DEG_EST = 90.0   # estimated heading change after reactive turn
+DODGE_BACKUP_CELLS_EST = 2  # coarse localization update after reverse
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +406,7 @@ class PathFollower:
         # Update mapper's position
         self.mapper.car_x, self.mapper.car_y = waypoint
         self.current_heading = desired_heading
+        self.mapper.car_angle = self.current_heading
         return False
 
     def _turn(self, delta_deg):
@@ -424,6 +427,7 @@ class PathFollower:
         time.sleep(0.1)
 
         self.current_heading = (self.current_heading + delta_deg) % 360
+        self.mapper.car_angle = self.current_heading
 
     def _read_sonar(self):
         """Single sonar read with validity filtering. Returns cm or None."""
@@ -508,6 +512,14 @@ class PathFollower:
         direction = 'left' if getattr(self, '_last_dodge_dir', 'right') == 'right' else 'right'
         self._last_dodge_dir = direction
 
+        # Coarse localization update for reverse phase.
+        # This keeps mapper pose closer to physical pose before the next scan.
+        back_angle = math.radians(self.current_heading + 180.0)
+        dx = int(round(DODGE_BACKUP_CELLS_EST * math.cos(back_angle)))
+        dy = int(round(DODGE_BACKUP_CELLS_EST * math.sin(back_angle)))
+        self.mapper.car_x = max(0, min(self.mapper.map_size - 1, self.mapper.car_x + dx))
+        self.mapper.car_y = max(0, min(self.mapper.map_size - 1, self.mapper.car_y + dy))
+
         self.hw['backward'](DODGE_BACKUP_SPEED)
         time.sleep(DODGE_BACKUP_TIME)
         self.hw['stop']()
@@ -520,6 +532,13 @@ class PathFollower:
         time.sleep(DODGE_TURN_TIME)
         self.hw['stop']()
         time.sleep(0.1)
+
+        # Update heading estimate after turn and keep mapper orientation in sync.
+        if direction == 'left':
+            self.current_heading = (self.current_heading - DODGE_TURN_DEG_EST) % 360
+        else:
+            self.current_heading = (self.current_heading + DODGE_TURN_DEG_EST) % 360
+        self.mapper.car_angle = self.current_heading
 
     def _check_vision_override(self):
         """Return True if vision says we must stop."""

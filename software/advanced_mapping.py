@@ -29,6 +29,8 @@ SCAN_READINGS = 2         # Readings per angle (2 = fast+noise-resistant, 3 = mo
 QUICK_SCAN_STEP = 10      # Step size for mid-navigation quick rescans (degrees)
 MAX_DISTANCE = 200    # Maximum distance to consider (cm) - covers full 2m grid
 OBSTACLE_THRESHOLD = 180 # Distance threshold for marking obstacles (cm)
+MAX_RAW_SPREAD_CM = 35    # Reject scan angle if repeated reads disagree too much
+MAX_ADJACENT_JUMP_CM = 60 # Clamp abrupt one-angle spikes relative to previous angle
 SCAN_TILT_ANGLE = -2      # Tilt sensor slightly downward during scan (degrees, negative = down)
                           # Compensates for upward servo tilt; tune via calibrate_servo.py
 
@@ -61,6 +63,8 @@ class AdvancedMapper:
         
         # Scan history for interpolation
         self.scan_history = []
+        # Keep previous angle→distance map for light temporal smoothing.
+        self._last_scan_by_angle = {}
     
     def polar_to_cartesian(self, angle_deg, distance_cm, car_x=None, car_y=None, car_angle=None):
         """
@@ -166,6 +170,8 @@ class AdvancedMapper:
         if settle:
             time.sleep(settle)   # let vibration die before first reading
 
+        prev_distance = None
+        current_scan_by_angle = {}
         for angle in angles:
             # Smoothly sweep to next measurement angle
             self._sweep_servo(servo, current_angle, angle, is_mock=is_mock)
@@ -177,32 +183,43 @@ class AdvancedMapper:
             raw = []
             for _ in range(SCAN_READINGS):
                 d = us.get_distance() if hasattr(us, 'get_distance') else us.read()
+                # On HC-SR04 stacks used in this lab, -2 is commonly a timeout /
+                # no-return case (often open/empty space), not a near obstacle.
+                if d == -2:
+                    d = MAX_DISTANCE - 1
                 if 0 < d < MAX_DISTANCE:
                     raw.append(d)
                 if inter_read_delay:
                     time.sleep(inter_read_delay)
 
             if raw:
+                # Reject unstable reads at this angle (often wire noise / echo glitches).
+                spread = max(raw) - min(raw)
+                if len(raw) > 1 and spread > MAX_RAW_SPREAD_CM:
+                    print(f"  Angle {angle:3d}deg: noisy reads {raw} (spread {spread:.1f} cm), skipping")
+                    continue
+
                 distance = sorted(raw)[len(raw) // 2]  # median
 
-                # --- Angle-aware self-detection filter ---
-                # The HC-SR04 cannot measure closer than ~2 cm (echo overlap).
-                # Self-detection (chassis/mount) only happens at wide angles where
-                # the beam sweeps backward over the car body (typically >±65°).
-                # Forward angles (±60°) should trust readings down to 2 cm —
-                # anything there is a real floor obstacle (shoe, box, etc.).
-                abs_angle = abs(angle)
-                if abs_angle <= 60:
-                    # Forward sector: self-detection threshold = 2 cm only
-                    self_detect_thresh = 2
-                else:
-                    # Wide/backward sector: chassis is genuinely in the way here
-                    self_detect_thresh = 5
+                # Suppress single-angle spikes: clamp against neighboring angle.
+                if prev_distance is not None:
+                    jump = abs(distance - prev_distance)
+                    if jump > MAX_ADJACENT_JUMP_CM:
+                        distance = prev_distance
 
-                if distance < self_detect_thresh:
-                    print(f"  Angle {angle:3d}deg: {distance:5.1f} cm  (self-detection, skipping)")
+                # Keep only physically implausible near-field echoes filtered.
+                # We intentionally avoid aggressive self-detection suppression.
+                if distance < 2:
+                    print(f"  Angle {angle:3d}deg: {distance:5.1f} cm  (invalid near-field echo, skipping)")
                 else:
+                    # Light temporal smoothing with previous scan at same angle.
+                    old = self._last_scan_by_angle.get(angle)
+                    if old is not None:
+                        distance = 0.7 * distance + 0.3 * old
+
                     scan_data.append((angle, distance))
+                    current_scan_by_angle[angle] = distance
+                    prev_distance = distance
                     print(f"  Angle {angle:3d}deg: {distance:5.1f} cm  (from {len(raw)} valid reads)")
             else:
                 print(f"  Angle {angle:3d}deg:  no valid reading (skipping)")
@@ -216,6 +233,7 @@ class AdvancedMapper:
         
         # Store scan history
         self.scan_history = scan_data
+        self._last_scan_by_angle = current_scan_by_angle
         
         # Interpolate if requested
         if interpolate:
@@ -264,7 +282,7 @@ class AdvancedMapper:
             
             # Interpolate between points
             # Use smaller step for interpolation (e.g., every 5 degrees)
-            interp_step = min(5, step // 2)
+            interp_step = max(1, min(5, step // 2 if step > 1 else 1))
             num_points = abs(angle2 - angle1) // interp_step
             
             if num_points > 1:
@@ -301,23 +319,31 @@ class AdvancedMapper:
         obstacles_found = 0
         
         for angle, distance in scan_data:
-            # Gate obstacle marking: only mark if distance is within threshold
-            if distance <= 0 or distance >= MAX_DISTANCE or distance > OBSTACLE_THRESHOLD:
+            # Invalid reading, ignore.
+            if distance <= 0 or distance >= MAX_DISTANCE:
                 continue
-            
-            # Convert to Cartesian coordinates
+
+            if distance > OBSTACLE_THRESHOLD:
+                # No near obstacle in this direction: mark visible ray as free
+                # up to threshold distance to reduce persistent UNKNOWN regions.
+                far_pos = self.polar_to_cartesian(
+                    angle, OBSTACLE_THRESHOLD, car_x, car_y, car_angle)
+                if far_pos:
+                    x_far, y_far = far_pos
+                    self.mark_free_space(car_x, car_y, x_far, y_far)
+                continue
+
+            # Convert obstacle hit to map coordinates.
             hit_pos = self.polar_to_cartesian(angle, distance, car_x, car_y, car_angle)
-            
             if not hit_pos:
                 continue
-            
+
             x_hit, y_hit = hit_pos
-            
-            # Mark free space along the ray from car to (just before) hit
-            # This marks all cells from car to obstacle as free
+
+            # Mark free space along the ray from car to (just before) hit.
             self.mark_free_space(car_x, car_y, x_hit, y_hit)
-            
-            # Mark occupied at hit point
+
+            # Mark occupied at hit point.
             if self.occupancy_map[y_hit, x_hit] != OCCUPIED:
                 self.occupancy_map[y_hit, x_hit] = OCCUPIED
                 obstacles_found += 1

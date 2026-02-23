@@ -13,6 +13,7 @@ import os
 import sys
 import warnings
 import numpy as np
+from collections import defaultdict
 from hardware_mock import is_raspberry_pi
 
 # Suppress protobuf deprecation warnings
@@ -410,6 +411,10 @@ class ObjectDetector:
         self.method = method
         self.detector = None
         self.detection_backend = None
+        # Temporal smoothing state for robustness (reduces one-frame false positives).
+        self._critical_classes = {"person", "stop sign", "traffic light"}
+        self._critical_hits = defaultdict(int)  # class -> recent consecutive hit count
+        self._critical_last_seen_ts = defaultdict(float)
 
         if method == 'auto':
             method = 'mediapipe' if MEDIAPIPE_AVAILABLE else 'mock'
@@ -439,7 +444,9 @@ class ObjectDetector:
         Returns:
             List of detection dictionaries with normalized labels
         """
-        return self.detector.detect_objects(frame)
+        raw = self.detector.detect_objects(frame)
+        deduped = self._dedupe_detections(raw)
+        return self._stabilize_critical_detections(deduped)
     
     def should_stop(self, detections=None, stop_classes=None):
         """
@@ -477,6 +484,89 @@ class ObjectDetector:
         """Clean up resources"""
         if hasattr(self.detector, 'cleanup'):
             self.detector.cleanup()
+
+    @staticmethod
+    def _bbox_iou(b1, b2):
+        """Compute IoU between two bboxes (x, y, w, h)."""
+        x1, y1, w1, h1 = b1
+        x2, y2, w2, h2 = b2
+        ax1, ay1, ax2, ay2 = x1, y1, x1 + w1, y1 + h1
+        bx1, by1, bx2, by2 = x2, y2, x2 + w2, y2 + h2
+
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+        inter = iw * ih
+        if inter <= 0:
+            return 0.0
+        union = (w1 * h1) + (w2 * h2) - inter
+        if union <= 0:
+            return 0.0
+        return inter / union
+
+    def _dedupe_detections(self, detections, iou_threshold=0.55):
+        """
+        Remove overlapping duplicates of the same class.
+        Keeps highest-confidence boxes first (simple class-wise NMS).
+        """
+        if not detections:
+            return []
+
+        sorted_dets = sorted(
+            detections, key=lambda d: d.get('confidence', d.get('score', 0.0)), reverse=True
+        )
+        kept = []
+        for det in sorted_dets:
+            cls = normalize_label(det.get('class', ''))
+            bbox = det.get('bbox', (0, 0, 0, 0))
+            is_duplicate = False
+            for kd in kept:
+                if normalize_label(kd.get('class', '')) != cls:
+                    continue
+                if self._bbox_iou(bbox, kd.get('bbox', (0, 0, 0, 0))) >= iou_threshold:
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                kept.append(det)
+        return kept
+
+    def _stabilize_critical_detections(self, detections):
+        """
+        Apply temporal confirmation for safety-critical classes:
+        - High-confidence detections pass immediately.
+        - Mid-confidence detections need to appear in >=2 nearby frames.
+        Non-critical classes pass through unchanged.
+        """
+        now = time.time()
+        stabilized = []
+        seen_now = set()
+
+        for det in detections:
+            cls = normalize_label(det.get('class', ''))
+            conf = det.get('confidence', det.get('score', 0.0))
+            if cls in self._critical_classes:
+                last_seen = self._critical_last_seen_ts[cls]
+                if (now - last_seen) <= 0.8:
+                    self._critical_hits[cls] += 1
+                else:
+                    self._critical_hits[cls] = 1
+                self._critical_last_seen_ts[cls] = now
+                seen_now.add(cls)
+
+                # Immediate accept at strong confidence, otherwise require persistence.
+                if conf >= 0.65 or self._critical_hits[cls] >= 2:
+                    stabilized.append(det)
+            else:
+                stabilized.append(det)
+
+        # Decay stale critical classes so old history does not leak indefinitely.
+        for cls in list(self._critical_hits.keys()):
+            if cls in seen_now:
+                continue
+            if (now - self._critical_last_seen_ts.get(cls, 0.0)) > 1.2:
+                self._critical_hits[cls] = 0
+
+        return stabilized
 
 
 class VisionOverride:

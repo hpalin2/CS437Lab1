@@ -152,6 +152,47 @@ cd ~/CS437Lab1/software
 
 ---
 
+## Small-Car Room Tuning (Design Configuration)
+
+This project is tuned for a small PiCar-X driving on indoor floors (room-scale
+obstacles like boxes, shoes, bottles, food containers) where distances are
+typically short (about 10-80 cm). The defaults were adjusted to prioritize
+robust local navigation over perfect object labels.
+
+### Vision Policy (Proximity-First, Label-Agnostic)
+- In `self_driving.py`, navigation does **not** depend on correct class labels.
+- A detection becomes actionable mainly from geometry + confidence:
+  - confidence threshold (`VISION_MIN_CONFIDENCE`)
+  - bbox area threshold (`VISION_MIN_BBOX_AREA`, ratio threshold)
+  - bbox center near image center (`VISION_CENTER_X_TOL_RATIO`)
+  - bbox lower in frame (`VISION_MIN_BBOX_BOTTOM_RATIO`)
+- This reduces false stops from side/background detections and focuses on
+  "is something close in front of the car?".
+
+### Ultrasonic Policy for HC-SR04
+- In `advanced_mapping.py`, HC-SR04 value `-2` is treated as a timeout/open
+  ray (likely empty space in this setup), not an obstacle hit.
+- Aggressive self-detection filtering is intentionally avoided; only impossible
+  near-field echoes are discarded.
+- Noisy angle reads with large spread are skipped to reduce map corruption.
+
+### Mapping/Planning Robustness Defaults
+- Full scans can rebuild the local map each cycle (`MAP_REBUILD_EACH_FULL_SCAN`)
+  so stale obstacles do not accumulate and seal valid corridors.
+- If A* fails with the current clearance, planner retries once with relaxed
+  inflation (`clearance - 1`) before giving up.
+- Pose/heading are kept in sync after reactive dodge turns to improve replan
+  consistency.
+
+### Practical Guidance for Demo Runs
+- Keep obstacles at least one car-width apart where possible.
+- Avoid highly reflective surfaces close to the ultrasonic sensor.
+- If route is still too conservative in a tight layout, run:
+  - `--clearance 1`
+  - `--rescan 3`
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |
