@@ -1,11 +1,7 @@
 """
 Hardware mock module for PC development.
 This allows you to develop and test code on your PC without Raspberry Pi hardware.
-On the Raspberry Pi, this will be replaced by the actual picar library (PiCar-X or PiCar-4WD).
-
-This module provides a compatible interface that works with both:
-- PiCar-4WD: Module-level API (fc.forward(), fc.turn_left(), etc.)
-- PiCar-X: Instance-based API (px.forward(), px.set_dir_servo_angle(), etc.)
+On the Raspberry Pi, this uses the actual picarx library (PiCar-X).
 
 Your code will work on both PC (with mocks) and Raspberry Pi (with real hardware).
 """
@@ -114,15 +110,15 @@ def is_raspberry_pi():
 def get_hardware():
     """
     Returns appropriate hardware interface based on platform.
-    On PC: returns mock objects
-    On Pi: tries PiCar-X first, then PiCar-4WD, then mocks
-    
+    On PC: returns mock objects.
+    On Pi: uses PiCar-X (picarx), falls back to mocks if unavailable.
+
     Usage:
         hw = get_hardware()
-        hw['forward'](50)              # Works on both PC and Pi
-        hw['turn_left'](30)            # Works on both (maps to steering on PiCar-X)
-        hw['servo'].set_angle(90)      # Works on both
-        distance = hw['ultrasonic'].read()  # Works on both
+        hw['forward'](50)
+        hw['turn_left'](30)
+        hw['servo'].set_angle(90)
+        distance = hw['ultrasonic'].read()
     """
     if is_raspberry_pi():
         # Try PiCar-X first (your hardware)
@@ -225,26 +221,8 @@ def get_hardware():
                 'hardware_type': 'picar-x'
             }
         except ImportError:
-            # Try PiCar-4WD as fallback
-            try:
-                import picar_4wd as fc
-                
-                return {
-                    'fc': fc,  # The actual picar_4wd module
-                    'forward': lambda p: fc.forward(p),
-                    'backward': lambda p: fc.backward(p),
-                    'turn_left': lambda p: fc.turn_left(p),
-                    'turn_right': lambda p: fc.turn_right(p),
-                    'stop': lambda: fc.stop(),
-                    'servo': fc.servo,  # Servo object from picar_4wd
-                    'ultrasonic': fc.us,  # Ultrasonic object from picar_4wd
-                    'is_mock': False,
-                    'hardware_type': 'picar-4wd'
-                }
-            except ImportError as e:
-                print(f"Warning: Running on Pi but neither picar-x nor picar-4wd found: {e}")
-                print("Using mocks instead. Install picar-x or picar-4wd on Pi for real hardware.")
-                return get_mock_hardware()
+            print("Warning: Running on Pi but picarx not found. Using mocks instead.")
+            return get_mock_hardware()
         except Exception as e:
             print(f"Warning: Error importing picar library: {e}")
             print("Using mocks instead.")
@@ -260,7 +238,6 @@ def get_mock_hardware():
     
     return {
         'px': None,  # Not available in mock mode
-        'fc': None,  # Not available in mock mode
         'forward': lambda p: mock_forward.forward(p),
         'backward': lambda p: mock_forward.backward(p),
         'turn_left': lambda p: mock_forward.turn_left(p),
@@ -271,18 +248,3 @@ def get_mock_hardware():
         'is_mock': True,
         'hardware_type': 'mock'
     }
-
-# Convenience function to get hardware in a way that matches common picar-4wd usage
-def get_picar_components():
-    """
-    Alternative interface that returns components in a way that matches
-    common picar-4wd example code patterns.
-    
-    Usage (matches common picar examples):
-        fc, servo, us = get_picar_components()
-        fc.forward(50)
-        servo.set_angle(90)
-        distance = us.read()
-    """
-    hw = get_hardware()
-    return hw['forward'], hw['servo'], hw['ultrasonic']

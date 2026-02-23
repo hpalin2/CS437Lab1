@@ -2,15 +2,10 @@
 Part 2, Step 2.2: Object Detection
 Detects objects using camera feed and reacts accordingly.
 
-Primary backend: MediaPipe Tasks Object Detector (recommended for 2026)
-- Works on both PC (webcam) and Raspberry Pi 5 (Picamera2)
-- Supports COCO classes: person, stop sign, etc.
-- Future-proof, actively maintained by Google
-
-Secondary backend: vilib (PiCar-X convenience features only)
-- Face detection (not full person detection)
-- Color detection, QR codes
-- Limited to PiCar-X ecosystem
+Backend: MediaPipe Tasks Object Detector
+- Works on both PC (webcam) and Raspberry Pi (Picamera2 / rpicam-vid)
+- Detects 80 COCO classes: person, stop sign, vehicles, furniture, etc.
+- Model: efficientdet_lite2.tflite
 """
 
 import time
@@ -37,12 +32,6 @@ try:
     MEDIAPIPE_AVAILABLE = True
 except ImportError:
     MEDIAPIPE_AVAILABLE = False
-
-try:
-    from vilib import Vilib
-    VILIB_AVAILABLE = True
-except ImportError:
-    VILIB_AVAILABLE = False
 
 # Try Picamera2 for Raspberry Pi
 try:
@@ -145,26 +134,19 @@ class MediaPipeDetector:
         
         # Determine model path
         if model_path is None:
-            # Try common locations — prefer Lite2 (best stop-sign accuracy)
             possible_paths = [
                 'models/efficientdet_lite2.tflite',
                 'efficientdet_lite2.tflite',
-                'models/efficientdet_lite0.tflite',  # fallback: fastest
-                'efficientdet_lite0.tflite',
-                'models/efficientdet_lite1.tflite',
-                'efficientdet_lite1.tflite',
             ]
-            
-            model_path = None
             for path in possible_paths:
                 if os.path.exists(path):
                     model_path = path
                     break
-            
+
             if model_path is None:
                 raise FileNotFoundError(
-                    "Model file not found. Please download EfficientDet-Lite model.\n"
-                    "See: https://ai.google.dev/edge/mediapipe/solutions/vision/object_detector/python"
+                    "Model file not found: models/efficientdet_lite2.tflite\n"
+                    "Run: python download_model.py"
                 )
         
         if not os.path.exists(model_path):
@@ -409,104 +391,29 @@ class MediaPipeDetector:
                 pass
 
 
-class VilibDetector:
-    """
-    Object detector using vilib (PiCar-X convenience features).
-    
-    NOTE: vilib's "human" detection is FACE detection, not full person detection.
-    It will miss people not facing the camera. For general object detection
-    (including stop signs), use MediaPipe instead.
-    """
-    
-    def __init__(self):
-        if not VILIB_AVAILABLE:
-            raise ImportError("vilib not available. Install vilib for PiCar-X.")
-        
-        # Start camera
-        Vilib.camera_start(vflip=False, hflip=False)
-        Vilib.display(local=False, web=False)  # No display for headless
-        
-        # Enable face detection (NOT general object detection)
-        # Note: vilib.object_detect_switch() may not provide general COCO classes
-        Vilib.face_detect_switch(True)
-        
-        print("[INFO] vilib detector initialized (face detection only)")
-        print("[WARNING] vilib 'human' detection is face detection, not full person detection")
-    
-    def detect_objects(self, frame=None):
-        """
-        Detect objects using vilib.
-        
-        NOTE: This only detects faces (not full person detection).
-        For stop signs and general objects, use MediaPipe.
-        
-        Returns:
-            List of detection dictionaries
-        """
-        detections = []
-        
-        # Check for face (vilib's "human" is actually face detection)
-        if Vilib.detect_obj_parameter.get('human_n', 0) != 0:
-            detections.append({
-                'class': 'person',  # Map face to person for compatibility
-                'confidence': 0.8,  # vilib doesn't provide confidence
-                'bbox': (
-                    Vilib.detect_obj_parameter.get('human_x', 0),
-                    Vilib.detect_obj_parameter.get('human_y', 0),
-                    Vilib.detect_obj_parameter.get('human_w', 0),
-                    Vilib.detect_obj_parameter.get('human_h', 0)
-                ),
-                'note': 'face_detection'  # Indicate this is face, not full person
-            })
-        
-        # vilib does not provide general object detection (stop signs, etc.)
-        # Use MediaPipe for that
-        
-        return detections
-    
-    def get_frame(self):
-        """Get current camera frame"""
-        # vilib manages frames internally
-        try:
-            return Vilib.img if hasattr(Vilib, 'img') else None
-        except:
-            return None
-    
-    def cleanup(self):
-        """Clean up resources"""
-        Vilib.camera_close()
-
-
 class ObjectDetector:
     """
-    Unified object detector interface.
-    Primary backend: MediaPipe (recommended for 2026)
-    Secondary: vilib (face detection only, PiCar-X convenience)
+    Object detector interface.
+    Backend: MediaPipe Tasks Object Detector (EfficientDet-Lite2, 80 COCO classes).
+    Falls back to MockDetector if MediaPipe is unavailable.
     """
-    
+
     def __init__(self, method='auto', model_path=None, camera_index=0):
         """
         Initialize detector.
-        
+
         Args:
-            method: 'auto', 'mediapipe', 'vilib', or 'mock'
-            model_path: Path to .tflite model (for MediaPipe)
+            method: 'auto', 'mediapipe', or 'mock'
+            model_path: Path to .tflite model (default: models/efficientdet_lite2.tflite)
             camera_index: Camera index for OpenCV (PC)
         """
         self.method = method
         self.detector = None
         self.detection_backend = None
-        
+
         if method == 'auto':
-            # Auto-select: prefer MediaPipe (most capable)
-            if MEDIAPIPE_AVAILABLE:
-                method = 'mediapipe'
-            elif is_raspberry_pi() and VILIB_AVAILABLE:
-                method = 'vilib'
-            else:
-                method = 'mock'
-        
-        # Initialize appropriate detector
+            method = 'mediapipe' if MEDIAPIPE_AVAILABLE else 'mock'
+
         if method == 'mediapipe':
             try:
                 self.detector = MediaPipeDetector(model_path=model_path, camera_index=camera_index)
@@ -517,18 +424,6 @@ class ObjectDetector:
                 print("[INFO] Falling back to mock detector")
                 self.detector = MockDetector()
                 self.detection_backend = 'mock'
-        
-        elif method == 'vilib':
-            try:
-                self.detector = VilibDetector()
-                self.detection_backend = 'vilib'
-                print("[INFO] Using vilib (face detection only, limited capabilities)")
-            except Exception as e:
-                print(f"[WARNING] vilib initialization failed: {e}")
-                print("[INFO] Falling back to mock detector")
-                self.detector = MockDetector()
-                self.detection_backend = 'mock'
-        
         else:  # mock
             self.detector = MockDetector()
             self.detection_backend = 'mock'
