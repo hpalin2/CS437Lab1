@@ -64,12 +64,12 @@ VISION_MIN_BBOX_AREA_RATIO = 0.008  # bbox_area / (frame_area)
 VISION_HARD_STOP_AREA_RATIO = 0.10  # very close object -> immediate stop + rescan
 VISION_CENTER_X_TOL_RATIO = 0.42    # only react if object center is near heading direction
 VISION_MIN_BBOX_BOTTOM_RATIO = 0.35 # ignore high-in-frame detections (likely far/background)
-VISION_RETRIGGER_COOLDOWN_S = 2.0   # short cooldown to avoid stop-loop flicker
+VISION_RETRIGGER_COOLDOWN_S = 12.0  # must outlast quick scan (~4s) + full scan (~8s) so car can plan+move
 CAMERA_FRAME_W = 640
 CAMERA_FRAME_H = 480
 
 # Mapping robustness defaults
-MAP_REBUILD_EACH_FULL_SCAN = True   # avoid stale accumulated obstacles across replans
+MAP_REBUILD_EACH_FULL_SCAN = False  # keep obstacle history across scans to avoid routing through known walls
 NO_PATH_RELAX_CLEARANCE = True      # if blocked, retry once with slightly less inflation
 
 
@@ -179,19 +179,15 @@ class SelfDrivingCar:
                     break
 
                 # ---- 2. Vision check (stop for people / signs / obstacles) --
+                self.mapper.car_angle = int(round(self.follower.current_heading)) % 360
                 should_stop, detections, category = self._vision_check()
                 if should_stop:
                     self._handle_vision_override(detections, category)
+                    # _handle_vision_override already did a quick scan — skip full scan
+                    continue
 
                 # ---- 3. Scan environment ---------------------------------
                 self.log.info("Scanning environment...")
-                # Keep mapper orientation aligned with actual drive controller heading.
-                self.mapper.car_angle = int(round(self.follower.current_heading)) % 360
-                if MAP_REBUILD_EACH_FULL_SCAN:
-                    # Rebuild local map from fresh scan each cycle to avoid stale
-                    # obstacle accumulation that can falsely seal corridors.
-                    self.mapper.occupancy_map.fill(UNKNOWN)
-                    self.mapper.occupancy_map[self.mapper.car_y, self.mapper.car_x] = FREE
                 scan_data = self.mapper.scan_environment(
                     self.hw, interpolate=True)
                 self.mapper.update_map_from_scan(scan_data)
@@ -252,18 +248,18 @@ class SelfDrivingCar:
                         self.running = False
                         break
 
-                    # Vision override mid-path
-                    should_stop, detections, category = self._vision_check()
-                    if should_stop:
-                        self._handle_vision_override(detections, category)
-                        break  # break inner loop → replan with fresh map
-
                     wp = simplified[i]
                     bumped = self.follower._move_to_waypoint(wp)
                     if bumped:
                         self.log.warning("Sonar bump — dodged obstacle, replanning")
                         break  # break inner loop → rescan + replan
                     steps_taken += 1
+
+                    # Vision override mid-path (checked AFTER moving, not before)
+                    should_stop, detections, category = self._vision_check()
+                    if should_stop:
+                        self._handle_vision_override(detections, category)
+                        break  # break inner loop → replan with fresh map
 
                     # Check arrival after each step
                     car_pos = (self.mapper.car_x, self.mapper.car_y)
