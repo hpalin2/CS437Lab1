@@ -40,8 +40,11 @@ TURN_DURATION = 0.4        # seconds per 90-degree turn
 
 # Continuous sonar guard (navigation.py-style) — checked every ~50 ms while driving
 SONAR_POLL_INTERVAL = 0.05  # seconds between reads during a drive step
-SONAR_STOP_CM = 12          # stop immediately if anything closer than this
-SONAR_MIN_VALID_CM = 5      # ignore readings ≤5 cm (chassis / mount)
+SONAR_STOP_CM      = 12     # hard stop threshold (cm)
+SONAR_SLOW_CM      = 25     # begin slowing down when closer than this (cm)
+SONAR_MIN_VALID_CM =  2     # HC-SR04 can't measure <2 cm; discard only below this
+SONAR_APPROACH_WINDOW = 4   # rolling window size for derivative
+SONAR_APPROACH_RATE   = -5  # cm/read — if trend is more negative than this, proactive slow
 # Reactive dodge on bump (mirrors navigation.py)
 DODGE_BACKUP_SPEED = 30
 DODGE_BACKUP_TIME  = 0.5    # seconds to reverse
@@ -439,19 +442,59 @@ class PathFollower:
 
     def _drive_forward_one_cell(self):
         """
-        Drive forward one step, polling the sonar every 50 ms (navigation.py style).
+        Drive forward one step, polling sonar every 50 ms.
+
+        Three-stage obstacle response (navigation.py approach):
+          1. Approaching (d < SONAR_SLOW_CM)    → reduce speed proportionally
+          2. Trend alert  (derivative negative)  → cut speed, flag warning
+          3. Hard stop    (d < SONAR_STOP_CM)    → stop immediately, return bumped=True
+
         Returns True if an obstacle was hit mid-step (caller should dodge + replan).
         """
-        self.hw['forward'](FORWARD_SPEED)
+        from collections import deque
+
+        window = deque(maxlen=SONAR_APPROACH_WINDOW)
+        current_speed = FORWARD_SPEED
+        self.hw['forward'](current_speed)
+
         deadline = time.time() + STEP_DURATION
         bumped = False
+
         while time.time() < deadline:
             d = self._read_sonar()
-            if d is not None and d < SONAR_STOP_CM:
-                self.hw['stop']()
-                bumped = True
-                break
+
+            if d is not None:
+                window.append(d)
+
+                # ── Stage 3: hard stop ──────────────────────────────────────
+                if d < SONAR_STOP_CM:
+                    self.hw['stop']()
+                    bumped = True
+                    break
+
+                # ── Stage 1: proportional slowdown ─────────────────────────
+                if d < SONAR_SLOW_CM:
+                    # Scale speed: full speed at SONAR_SLOW_CM, min 10% at SONAR_STOP_CM
+                    ratio = (d - SONAR_STOP_CM) / (SONAR_SLOW_CM - SONAR_STOP_CM)
+                    ratio = max(0.0, min(1.0, ratio))
+                    new_speed = int(10 + ratio * (FORWARD_SPEED - 10))
+                    if new_speed != current_speed:
+                        current_speed = new_speed
+                        self.hw['forward'](current_speed)
+
+                # ── Stage 2: derivative / trend check ──────────────────────
+                if len(window) >= SONAR_APPROACH_WINDOW:
+                    # Simple first-difference trend over the window
+                    trend = window[-1] - window[0]   # negative = approaching
+                    if trend < SONAR_APPROACH_RATE:
+                        # Approaching fast — halve speed proactively
+                        new_speed = max(10, current_speed // 2)
+                        if new_speed != current_speed:
+                            current_speed = new_speed
+                            self.hw['forward'](current_speed)
+
             time.sleep(SONAR_POLL_INTERVAL)
+
         self.hw['stop']()
         time.sleep(0.05)
         return bumped

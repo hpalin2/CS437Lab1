@@ -184,11 +184,24 @@ class AdvancedMapper:
 
             if raw:
                 distance = sorted(raw)[len(raw) // 2]  # median
-                if distance < 5:
-                    # ≤5 cm = sensor mount / chassis; discard
+
+                # --- Angle-aware self-detection filter ---
+                # The HC-SR04 cannot measure closer than ~2 cm (echo overlap).
+                # Self-detection (chassis/mount) only happens at wide angles where
+                # the beam sweeps backward over the car body (typically >±65°).
+                # Forward angles (±60°) should trust readings down to 2 cm —
+                # anything there is a real floor obstacle (shoe, box, etc.).
+                abs_angle = abs(angle)
+                if abs_angle <= 60:
+                    # Forward sector: self-detection threshold = 2 cm only
+                    self_detect_thresh = 2
+                else:
+                    # Wide/backward sector: chassis is genuinely in the way here
+                    self_detect_thresh = 5
+
+                if distance < self_detect_thresh:
                     print(f"  Angle {angle:3d}deg: {distance:5.1f} cm  (self-detection, skipping)")
                 else:
-                    # 5-10 cm is a real close obstacle (shoe, box, etc.) — keep it
                     scan_data.append((angle, distance))
                     print(f"  Angle {angle:3d}deg: {distance:5.1f} cm  (from {len(raw)} valid reads)")
             else:
