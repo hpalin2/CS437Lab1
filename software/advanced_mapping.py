@@ -23,8 +23,10 @@ MAP_CENTER = MAP_SIZE // 2  # Car starts at center (50, 50)
 SCAN_ANGLE_MIN = -90  # Minimum scan angle (degrees)
 SCAN_ANGLE_MAX = 90   # Maximum scan angle (degrees)
 SCAN_STEP = 5         # Degrees between scan points (5° = 37 points per scan)
-SERVO_STEP_DELAY = 0.02   # Seconds per 1° step during sweep (~20°/s — smooth but not sluggish)
-SERVO_SETTLE_TIME = 0.15  # Extra settle pause after arriving at each scan angle (seconds)
+SERVO_STEP_DELAY = 0.01   # Seconds per 1° step during sweep (~50°/s — fast but still smooth)
+SERVO_SETTLE_TIME = 0.03  # Extra settle pause after arriving at each scan angle (seconds)
+SCAN_READINGS = 2         # Readings per angle (2 = fast+noise-resistant, 3 = more robust)
+QUICK_SCAN_STEP = 10      # Step size for mid-navigation quick rescans (degrees)
 MAX_DISTANCE = 200    # Maximum distance to consider (cm) - covers full 2m grid
 OBSTACLE_THRESHOLD = 180 # Distance threshold for marking obstacles (cm)
 SCAN_TILT_ANGLE = -2      # Tilt sensor slightly downward during scan (degrees, negative = down)
@@ -105,18 +107,21 @@ class AdvancedMapper:
             return (x_int, y_int)
         return None
     
-    def _sweep_servo(self, servo, from_angle, to_angle):
+    def _sweep_servo(self, servo, from_angle, to_angle, is_mock=False):
         """
         Smoothly sweep servo from from_angle to to_angle one degree at a time.
         Always reads the servo's last-known position so there is no snapping.
+        In mock mode the per-step delay is skipped so tests run at full speed.
         """
         if from_angle == to_angle:
             return
         direction = 1 if to_angle > from_angle else -1
+        delay = 0 if is_mock else SERVO_STEP_DELAY
         for a in range(from_angle + direction, to_angle + direction, direction):
             servo.set_angle(a)
-            time.sleep(SERVO_STEP_DELAY)
-
+            if delay:
+                time.sleep(delay)
+    
     def scan_environment(self, hw, angle_min=SCAN_ANGLE_MIN, angle_max=SCAN_ANGLE_MAX, 
                         step=SCAN_STEP, interpolate=True):
         """
@@ -135,51 +140,64 @@ class AdvancedMapper:
         servo = hw['servo']
         us = hw['ultrasonic']
         px = hw.get('px')  # PiCar-X instance for tilt control (None in mock mode)
+        is_mock = hw.get('is_mock', False)
         
         scan_data = []
         angles = list(range(angle_min, angle_max + 1, step))
-        
+
+        # Settle/tilt delays are only meaningful on real hardware
+        settle = 0 if is_mock else SERVO_SETTLE_TIME
+        inter_read_delay = 0 if is_mock else 0.03
+
         # Apply tilt correction if running on real hardware
         if px is not None:
             px.set_cam_tilt_angle(SCAN_TILT_ANGLE)
             time.sleep(0.2)
             print(f"Tilt set to {SCAN_TILT_ANGLE}° (downward compensation)")
-
+        
         print(f"Scanning from {angle_min}° to {angle_max}° (step: {step}°)...")
-
+        
         # Use the servo's last-known angle so we never snap to an assumed position.
-        # servo.angle is set by every set_angle() call in both real and mock wrappers.
         current_angle = getattr(servo, 'angle', 0)
 
         # Smoothly move to start of scan range
-        self._sweep_servo(servo, current_angle, angle_min)
+        self._sweep_servo(servo, current_angle, angle_min, is_mock=is_mock)
         current_angle = angle_min
-        time.sleep(SERVO_SETTLE_TIME)   # let vibration die before first reading
-        
+        if settle:
+            time.sleep(settle)   # let vibration die before first reading
+
         for angle in angles:
             # Smoothly sweep to next measurement angle
-            self._sweep_servo(servo, current_angle, angle)
+            self._sweep_servo(servo, current_angle, angle, is_mock=is_mock)
             current_angle = angle
-            time.sleep(SERVO_SETTLE_TIME)  # settle before reading
+            if settle:
+                time.sleep(settle)  # settle before reading
 
-            # Take 3 readings and use median to reject outliers
+            # Take N readings and use median to reject outliers
             raw = []
-            for _ in range(3):
+            for _ in range(SCAN_READINGS):
                 d = us.get_distance() if hasattr(us, 'get_distance') else us.read()
                 if 0 < d < MAX_DISTANCE:
                     raw.append(d)
-                time.sleep(0.05)
-            
+                if inter_read_delay:
+                    time.sleep(inter_read_delay)
+
             if raw:
                 distance = sorted(raw)[len(raw) // 2]  # median
-                scan_data.append((angle, distance))
-                print(f"  Angle {angle:3d}deg: {distance:5.1f} cm  (from {len(raw)} valid reads)")
+                if distance < 5:
+                    # ≤5 cm = sensor mount / chassis; discard
+                    print(f"  Angle {angle:3d}deg: {distance:5.1f} cm  (self-detection, skipping)")
+                else:
+                    # 5-10 cm is a real close obstacle (shoe, box, etc.) — keep it
+                    scan_data.append((angle, distance))
+                    print(f"  Angle {angle:3d}deg: {distance:5.1f} cm  (from {len(raw)} valid reads)")
             else:
                 print(f"  Angle {angle:3d}deg:  no valid reading (skipping)")
         
         # Smoothly return servo to center and restore tilt
-        self._sweep_servo(servo, current_angle, 0)
-        time.sleep(SERVO_SETTLE_TIME)
+        self._sweep_servo(servo, current_angle, 0, is_mock=is_mock)
+        if settle:
+            time.sleep(settle)
         if px is not None:
             px.set_cam_tilt_angle(0)
         
@@ -192,6 +210,22 @@ class AdvancedMapper:
         
         return scan_data
     
+    def quick_scan(self, hw, angle_min=-60, angle_max=60):
+        """
+        Fast forward-sector scan for mid-navigation rescans.
+        Uses QUICK_SCAN_STEP (10°) and no interpolation — runs in ~3-4s.
+        Updates the map and returns raw scan data.
+        """
+        scan_data = self.scan_environment(
+            hw,
+            angle_min=angle_min,
+            angle_max=angle_max,
+            step=QUICK_SCAN_STEP,
+            interpolate=False,
+        )
+        self.update_map_from_scan(scan_data)
+        return scan_data
+
     def interpolate_scan(self, scan_data, step):
         """
         Interpolate between scan points to fill gaps.

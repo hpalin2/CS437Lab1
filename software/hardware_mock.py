@@ -55,12 +55,16 @@ class MockServo:
     """Mock servo control for testing on PC - matches picar-4wd servo API"""
     def __init__(self):
         self.angle = 0
+        self._last_printed = None  # only print on significant angle changes
     
     def set_angle(self, angle):
-        """Mock servo angle setting - matches picar-4wd API"""
+        """Mock servo angle setting - silent during sweeps, prints at landmarks."""
         self.angle = angle
-        print(f"[MOCK] Servo angle set to: {angle} degrees")
-        time.sleep(0.05)
+        # Only print when angle changes by ≥5° to avoid flooding output during sweeps
+        if self._last_printed is None or abs(angle - self._last_printed) >= 5:
+            print(f"[MOCK] Servo → {angle}°")
+            self._last_printed = angle
+        # No sleep — mock mode should run at full speed
     
     def get_angle(self):
         """Get current servo angle"""

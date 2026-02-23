@@ -38,6 +38,16 @@ FORWARD_SPEED = 25         # motor power for forward steps (%)
 STEP_DURATION = 0.4        # seconds to drive per step
 TURN_DURATION = 0.4        # seconds per 90-degree turn
 
+# Continuous sonar guard (navigation.py-style) — checked every ~50 ms while driving
+SONAR_POLL_INTERVAL = 0.05  # seconds between reads during a drive step
+SONAR_STOP_CM = 12          # stop immediately if anything closer than this
+SONAR_MIN_VALID_CM = 5      # ignore readings ≤5 cm (chassis / mount)
+# Reactive dodge on bump (mirrors navigation.py)
+DODGE_BACKUP_SPEED = 30
+DODGE_BACKUP_TIME  = 0.5    # seconds to reverse
+DODGE_TURN_SPEED   = 30
+DODGE_TURN_TIME    = 0.5    # seconds to turn (alternates left / right)
+
 
 # ---------------------------------------------------------------------------
 # Obstacle inflation
@@ -368,7 +378,10 @@ class PathFollower:
 
     # ----- private helpers -----------------------------------------------
     def _move_to_waypoint(self, waypoint):
-        """Turn to face *waypoint* then drive one step forward."""
+        """
+        Turn to face *waypoint* then drive one step forward.
+        Returns True if a sonar bump occurred (caller should break + replan).
+        """
         cx, cy = self.mapper.car_x, self.mapper.car_y
         desired_heading = direction_between((cx, cy), waypoint)
         delta = angle_difference(desired_heading, self.current_heading)
@@ -377,12 +390,18 @@ class PathFollower:
         if abs(delta) > 10:
             self._turn(delta)
 
-        # Drive forward one cell
-        self._drive_forward_one_cell()
+        # Drive forward — polls sonar continuously
+        bumped = self._drive_forward_one_cell()
+
+        if bumped:
+            # Reactive dodge (backup + turn) before handing control back to A*
+            self._reactive_dodge()
+            return True  # signal to caller: break inner loop → replan
 
         # Update mapper's position
         self.mapper.car_x, self.mapper.car_y = waypoint
         self.current_heading = desired_heading
+        return False
 
     def _turn(self, delta_deg):
         """
@@ -403,12 +422,61 @@ class PathFollower:
 
         self.current_heading = (self.current_heading + delta_deg) % 360
 
+    def _read_sonar(self):
+        """Single sonar read with validity filtering. Returns cm or None."""
+        if self.hw.get('is_mock'):
+            return None
+        us = self.hw.get('ultrasonic')
+        if us is None:
+            return None
+        try:
+            d = us.get_distance() if hasattr(us, 'get_distance') else us.read()
+            if d is not None and SONAR_MIN_VALID_CM < d < 400:
+                return d
+        except Exception:
+            pass
+        return None
+
     def _drive_forward_one_cell(self):
-        """Drive forward roughly one map cell (CELL_SIZE_CM = 2 cm)."""
+        """
+        Drive forward one step, polling the sonar every 50 ms (navigation.py style).
+        Returns True if an obstacle was hit mid-step (caller should dodge + replan).
+        """
         self.hw['forward'](FORWARD_SPEED)
-        time.sleep(STEP_DURATION)
+        deadline = time.time() + STEP_DURATION
+        bumped = False
+        while time.time() < deadline:
+            d = self._read_sonar()
+            if d is not None and d < SONAR_STOP_CM:
+                self.hw['stop']()
+                bumped = True
+                break
+            time.sleep(SONAR_POLL_INTERVAL)
         self.hw['stop']()
         time.sleep(0.05)
+        return bumped
+
+    def _reactive_dodge(self):
+        """
+        Roomba-style dodge when sonar detects a close obstacle mid-drive:
+        reverse briefly, turn away (alternating L/R), then let the caller
+        trigger a rescan + A* replan.
+        """
+        direction = 'left' if getattr(self, '_last_dodge_dir', 'right') == 'right' else 'right'
+        self._last_dodge_dir = direction
+
+        self.hw['backward'](DODGE_BACKUP_SPEED)
+        time.sleep(DODGE_BACKUP_TIME)
+        self.hw['stop']()
+        time.sleep(0.1)
+
+        if direction == 'left':
+            self.hw['turn_left'](DODGE_TURN_SPEED)
+        else:
+            self.hw['turn_right'](DODGE_TURN_SPEED)
+        time.sleep(DODGE_TURN_TIME)
+        self.hw['stop']()
+        time.sleep(0.1)
 
     def _check_vision_override(self):
         """Return True if vision says we must stop."""

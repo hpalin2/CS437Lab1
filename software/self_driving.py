@@ -53,6 +53,56 @@ VISION_CHECK_INTERVAL = 0.5    # seconds between vision checks while driving
 RESCAN_ON_BLOCKED = True       # force rescan when A* finds no path
 LOG_LEVEL = logging.INFO
 
+# ---------------------------------------------------------------------------
+# COCO-class behaviour groups
+# EfficientDet-Lite (all variants) is trained on COCO-80.
+# We split those 80 labels into three groups:
+#
+#   STOP_WAIT   → person is present; wait for them to clear before moving
+#   TRAFFIC     → traffic rule; mandatory pause then continue same path
+#   OBSTACLES   → static physical object; quick scan + reroute around it
+#
+# Anything not in any group is silently ignored (food, animals, etc.)
+# ---------------------------------------------------------------------------
+STOP_WAIT_CLASSES = {'person'}
+TRAFFIC_CLASSES   = {'stop sign', 'traffic light'}
+
+# Objects that should be mapped as obstacles and routed around.
+# NOTE: only triggered when confidence AND bbox area thresholds are met.
+OBSTACLE_CLASSES = {
+    # Furniture / large indoor objects
+    'chair', 'couch', 'bed', 'dining table', 'toilet',
+    # Vehicles (if indoors, treat as obstacle)
+    'car', 'truck', 'bus', 'motorcycle', 'bicycle',
+    # Bags / luggage (common lab-floor hazard)
+    'backpack', 'handbag', 'suitcase',
+    # Bottles / cups on the floor
+    'bottle', 'cup', 'bowl',
+    # Large electronics
+    'tv', 'laptop',
+    # Other large objects
+    'potted plant', 'vase', 'clock',
+}
+
+# ---------------------------------------------------------------------------
+# Vision filtering thresholds — prevent false-positive loops
+# ---------------------------------------------------------------------------
+# Minimum confidence to act on each category
+PERSON_CONFIDENCE_MIN   = 0.45   # safety-critical, lower threshold acceptable
+TRAFFIC_CONFIDENCE_MIN  = 0.45   # traffic rules
+OBSTACLE_CONFIDENCE_MIN = 0.55   # static objects: require stronger evidence
+
+# Bounding-box area (pixels²) below which an obstacle is "background" / too far
+# ~50×50 px at typical 320×240 capture. Ignored for person/traffic (safety).
+OBSTACLE_BBOX_MIN_AREA  = 2500
+
+# Cooldown in seconds after handling a detection of a given class — prevents
+# infinite rescan loops on permanently-visible background objects (e.g. a TV
+# mounted on the wall that is always in frame).
+PERSON_COOLDOWN_S   =  0.0   # no cooldown — always react to people
+TRAFFIC_COOLDOWN_S  = 12.0   # don't re-stop at same sign for 12 s
+OBSTACLE_COOLDOWN_S = 30.0   # object already mapped; ignore for 30 s
+
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -111,6 +161,11 @@ class SelfDrivingCar:
         self.total_vision_stops = 0
         self.start_time = None
 
+        # Per-class cooldown timestamps — maps class label → expiry time.
+        # Prevents infinite loops when a static object (e.g. wall-mounted TV)
+        # is permanently visible in the camera frame.
+        self._vision_cooldown: dict = {}   # {class_str: expiry_timestamp}
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -156,14 +211,10 @@ class SelfDrivingCar:
                     self.reached_goal = True
                     break
 
-                # ---- 2. Vision check (stop for people / signs) -----------
-                if self._vision_check():
-                    self.log.info("Vision override: STOPPING")
-                    self.hw['stop']()
-                    self.total_vision_stops += 1
-                    while self._vision_check():
-                        time.sleep(0.3)
-                    self.log.info("Vision override cleared, resuming")
+                # ---- 2. Vision check (stop for people / signs / obstacles) --
+                should_stop, detections, category = self._vision_check()
+                if should_stop:
+                    self._handle_vision_override(detections, category)
 
                 # ---- 3. Scan environment ---------------------------------
                 self.log.info("Scanning environment...")
@@ -221,17 +272,16 @@ class SelfDrivingCar:
                         break
 
                     # Vision override mid-path
-                    if self._vision_check():
-                        self.log.info("Vision override mid-path: STOPPING")
-                        self.hw['stop']()
-                        self.total_vision_stops += 1
-                        while self._vision_check():
-                            time.sleep(0.3)
-                        self.log.info("Vision override cleared")
-                        break  # replan after vision stop
+                    should_stop, detections, category = self._vision_check()
+                    if should_stop:
+                        self._handle_vision_override(detections, category)
+                        break  # break inner loop → replan with fresh map
 
                     wp = simplified[i]
-                    self.follower._move_to_waypoint(wp)
+                    bumped = self.follower._move_to_waypoint(wp)
+                    if bumped:
+                        self.log.warning("Sonar bump — dodged obstacle, replanning")
+                        break  # break inner loop → rescan + replan
                     steps_taken += 1
 
                     # Check arrival after each step
@@ -260,16 +310,121 @@ class SelfDrivingCar:
     # Private helpers
     # ------------------------------------------------------------------
     def _vision_check(self):
-        """Run one detection cycle and return True if car must stop."""
+        """
+        Run one detection cycle.
+
+        Returns (should_stop, detections, category) where category is one of:
+          'person'    — wait for person to clear
+          'traffic'   — traffic sign/light (mandatory pause)
+          'obstacle'  — static object; map it and reroute
+          None        — nothing actionable detected
+
+        Three-layer filter prevents infinite loops:
+          1. Confidence threshold  — different minima per category
+          2. Bounding-box area     — ignore tiny/far-away obstacle detections
+          3. Per-class cooldown    — after handling, silence that class for N s
+        """
         try:
-            detections = self.detector.detect_objects()
-            person = any(d['class'] == 'person' for d in detections)
-            stop_sign = any('stop sign' in d['class'] for d in detections)
-            self.override.update(person, stop_sign, time.time())
-            return self.override.should_stop()
+            all_detections = self.detector.detect_objects()
+            now = time.time()
+
+            persons   = []
+            traffics  = []
+            obstacles = []
+
+            for d in all_detections:
+                cls   = d['class'].lower()
+                conf  = d.get('confidence', d.get('score', 0.0))
+                bbox  = d.get('bbox', (0, 0, 0, 0))
+                area  = bbox[2] * bbox[3]          # w × h
+                on_cd = now < self._vision_cooldown.get(cls, 0)
+
+                if cls in STOP_WAIT_CLASSES:
+                    if conf >= PERSON_CONFIDENCE_MIN and not on_cd:
+                        persons.append(d)
+
+                elif cls in TRAFFIC_CLASSES:
+                    if conf >= TRAFFIC_CONFIDENCE_MIN and not on_cd:
+                        traffics.append(d)
+
+                elif cls in OBSTACLE_CLASSES:
+                    # Extra area filter: tiny bbox → background object, ignore
+                    if (conf >= OBSTACLE_CONFIDENCE_MIN
+                            and area >= OBSTACLE_BBOX_MIN_AREA
+                            and not on_cd):
+                        obstacles.append(d)
+
+            self.override.update(bool(persons), bool(traffics), now)
+
+            if persons:
+                return True, persons, 'person'
+            if traffics:
+                return True, traffics, 'traffic'
+            if obstacles:
+                return True, obstacles, 'obstacle'
+            return False, all_detections, None
+
         except Exception as e:
             self.log.debug(f"Vision check error: {e}")
-            return False
+            return False, [], None
+
+    def _handle_vision_override(self, detections, category):
+        """
+        Smart response based on what was detected.
+
+        category == 'person'   → wait up to 10 s, reverse if stuck, then replan
+        category == 'traffic'  → mandatory 3 s pause, then continue same path
+        category == 'obstacle' → quick scan now; A* will route around it
+        """
+        self.hw['stop']()
+        self.total_vision_stops += 1
+
+        labels = ', '.join(
+            f"{d['class']} ({d.get('confidence', d.get('score', 0)):.0%})"
+            for d in detections
+        )
+        self.log.warning(f"Vision override [{category}] — detected: [{labels}]")
+
+        if category == 'traffic':
+            self.log.info("TRAFFIC SIGN/LIGHT — pausing 3 s then continuing on same path")
+            time.sleep(3.0)
+
+        elif category == 'person':
+            self.log.info("PERSON detected — waiting up to 10 s for them to clear…")
+            deadline = time.time() + 10.0
+            while time.time() < deadline:
+                still_blocked, _, _ = self._vision_check()
+                if not still_blocked:
+                    break
+                time.sleep(0.3)
+            else:
+                self.log.warning("Person still present — reversing 0.5 s to create space")
+                self.hw['backward'](20)
+                time.sleep(0.5)
+                self.hw['stop']()
+
+        elif category == 'obstacle':
+            self.log.info(f"STATIC OBSTACLE detected — scanning to map it")
+            # No waiting needed — the object is already there; scan will
+            # add it to the occupancy grid and A* will route around it.
+
+        # Quick forward-sector scan so A* has fresh obstacle data
+        self.log.info("Quick forward scan after vision override…")
+        self.mapper.quick_scan(self.hw, angle_min=-60, angle_max=60)
+
+        # Set per-class cooldown so we don't loop on the same detection
+        now = time.time()
+        if category == 'obstacle':
+            for d in detections:
+                cls = d['class'].lower()
+                self._vision_cooldown[cls] = now + OBSTACLE_COOLDOWN_S
+                self.log.debug(f"  Cooldown set for '{cls}' for {OBSTACLE_COOLDOWN_S:.0f} s")
+        elif category == 'traffic':
+            for d in detections:
+                cls = d['class'].lower()
+                self._vision_cooldown[cls] = now + TRAFFIC_COOLDOWN_S
+
+        self.log.info("Vision override handled — replanning")
 
     def _print_summary(self):
         elapsed = time.time() - self.start_time if self.start_time else 0
@@ -312,6 +467,9 @@ def main():
         "--detector", type=str, default='auto',
         choices=['auto', 'mediapipe', 'vilib', 'mock'],
         help="Object detection backend (default: auto)")
+    parser.add_argument(
+        "--yes", "-y", action='store_true',
+        help="Skip the 'Ready to start?' confirmation prompt")
     args = parser.parse_args()
 
     # Get hardware
@@ -325,10 +483,11 @@ def main():
         detector_method = 'mock'
     else:
         print("[INFO] Running on Raspberry Pi — the car WILL move!")
-        confirm = input("Ready to start? (y/n): ").strip().lower()
-        if confirm != "y":
-            print("Aborted.")
-            return
+        if not args.yes:
+            confirm = input("Ready to start? (y/n): ").strip().lower()
+            if confirm != "y":
+                print("Aborted.")
+                return
         max_time = args.max_time
         detector_method = args.detector
 

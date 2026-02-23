@@ -145,9 +145,11 @@ class MediaPipeDetector:
         
         # Determine model path
         if model_path is None:
-            # Try common locations
+            # Try common locations — prefer Lite2 (best stop-sign accuracy)
             possible_paths = [
-                'models/efficientdet_lite0.tflite',
+                'models/efficientdet_lite2.tflite',
+                'efficientdet_lite2.tflite',
+                'models/efficientdet_lite0.tflite',  # fallback: fastest
                 'efficientdet_lite0.tflite',
                 'models/efficientdet_lite1.tflite',
                 'efficientdet_lite1.tflite',
