@@ -1,8 +1,65 @@
-# Core dependencies for picar development
-# Note: picar-x/picar-4wd itself needs to be installed on Raspberry Pi
-# This file is for additional dependencies you might need
+# =============================================================
+# PiCar-X Self-Driving — Python 3.11 requirements
+# =============================================================
+#
+# WHY Python 3.11:
+#   MediaPipe 0.10.x does NOT support Python 3.13+ (system default on Pi).
+#   Always run code with the py311 venv:
+#     /home/hpalin/py311/bin/python  (or activate first)
+#
+# FULL SETUP (Raspberry Pi — one-time):
+#
+#   1. Create venv (skip if py311 already exists):
+#        python3.11 -m venv ~/py311
+#
+#   2. Install pip packages:
+#        ~/py311/bin/pip install --upgrade pip
+#        ~/py311/bin/pip install -r requirements.txt
+#
+#   3. Install picar-x + robot_hat from local source (Pi only):
+#        ~/py311/bin/pip install ~/picar-x
+#        ~/py311/bin/pip install ~/robot-hat
+#
+#   4. Install system camera package (Pi only):
+#        sudo apt-get install -y python3-libcamera
+#
+#   5. Fix GPIO permissions (Pi only, run once per session):
+#        newgrp gpio
+#        # or permanently: sudo usermod -aG gpio $USER  (then re-login)
+#
+# PC DEVELOPMENT:
+#   pip install numpy mediapipe opencv-python
+#   (GPIO/picamera2 installs are no-ops or stubs on non-Pi)
+#
+# =============================================================
 
-numpy>=1.21.0
-opencv-python>=4.5.0
-mediapipe>=0.10.0       # Object detection (Step 2.2)
-# picamera2              # Only needed on Raspberry Pi (camera capture)
+# --- Core numerics ---
+numpy>=2.0.0
+
+# --- Object detection (MediaPipe + OpenCV) ---
+# MediaPipe 0.10+ works with Python 3.11, NOT 3.13
+mediapipe>=0.10.14
+opencv-python>=4.13.0
+
+# --- GPIO & hardware (Raspberry Pi) ---
+# Safe to install on all platforms; will simply not be used on PC
+RPi.GPIO>=0.7.1
+gpiozero>=2.0.0
+lgpio>=0.2.0
+smbus2>=0.4.0
+
+# --- Camera (Raspberry Pi) ---
+# picamera2 is a pip package but requires system libcamera bindings.
+# Install the system package FIRST, then pip install picamera2:
+#   sudo apt-get install -y python3-libcamera
+# Then:
+picamera2>=0.3.0
+
+# --- picar-x and robot_hat ---
+# These are installed from local source directories on the Pi.
+# They are NOT on PyPI. Install with:
+#   ~/py311/bin/pip install ~/picar-x
+#   ~/py311/bin/pip install ~/robot-hat
+# Verified working versions:
+#   picar-x 2.1.0a1
+#   robot_hat 2.5.1
