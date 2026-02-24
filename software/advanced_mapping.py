@@ -23,15 +23,16 @@ MAP_CENTER = MAP_SIZE // 2  # Car starts at center (50, 50)
 SCAN_ANGLE_MIN = -90  # Minimum scan angle (degrees)
 SCAN_ANGLE_MAX = 90   # Maximum scan angle (degrees)
 SCAN_STEP = 5         # Degrees between scan points (5° = 37 points per scan)
-SERVO_STEP_DELAY = 0.01   # Seconds per 1° step during sweep (~50°/s — fast but still smooth)
-SERVO_SETTLE_TIME = 0.03  # Extra settle pause after arriving at each scan angle (seconds)
+SERVO_STEP_DELAY = 0.05   # Seconds per 1° step during forward scan sweep (~20°/s — moderate speed)
+SERVO_SETTLE_TIME = 0.07  # Extra settle pause after arriving at each scan angle (seconds)
+SERVO_RETURN_DELAY = 0.01 # Seconds per 1° step during return sweep (~100°/s — fast return)
 SCAN_READINGS = 2         # Readings per angle (2 = fast+noise-resistant, 3 = more robust)
 QUICK_SCAN_STEP = 10      # Step size for mid-navigation quick rescans (degrees)
 MAX_DISTANCE = 200    # Maximum distance to consider (cm) - covers full 2m grid
 OBSTACLE_THRESHOLD = 180 # Distance threshold for marking obstacles (cm)
 MAX_RAW_SPREAD_CM = 35    # Reject scan angle if repeated reads disagree too much
 MAX_ADJACENT_JUMP_CM = 60 # Clamp abrupt one-angle spikes relative to previous angle
-SCAN_TILT_ANGLE = -2      # Tilt sensor slightly downward during scan (degrees, negative = down)
+SCAN_TILT_ANGLE = 5      # Tilt sensor slightly downward during scan (degrees, negative = down)
                           # Compensates for upward servo tilt; tune via calibrate_servo.py
 
 # Occupancy states
@@ -53,7 +54,7 @@ class AdvancedMapper:
         """
         self.map_size = map_size
         self.map_center = map_size // 2
-        # Use 3-state occupancy: unknown=-1, free=0, occupied=1
+        # Initialize as FREE (0) by default, mark OCCUPIED (1) only when obstacles found
         self.occupancy_map = np.full((map_size, map_size), UNKNOWN, dtype=np.int8)
         
         # Car position (in map coordinates, starts at center)
@@ -111,16 +112,23 @@ class AdvancedMapper:
             return (x_int, y_int)
         return None
     
-    def _sweep_servo(self, servo, from_angle, to_angle, is_mock=False):
+    def _sweep_servo(self, servo, from_angle, to_angle, is_mock=False, fast_return=False):
         """
         Smoothly sweep servo from from_angle to to_angle one degree at a time.
         Always reads the servo's last-known position so there is no snapping.
         In mock mode the per-step delay is skipped so tests run at full speed.
+        
+        Args:
+            servo: Servo object
+            from_angle: Starting angle
+            to_angle: Ending angle
+            is_mock: Whether in mock mode
+            fast_return: If True, use faster return speed (SERVO_RETURN_DELAY)
         """
         if from_angle == to_angle:
             return
         direction = 1 if to_angle > from_angle else -1
-        delay = 0 if is_mock else SERVO_STEP_DELAY
+        delay = 0 if is_mock else (SERVO_RETURN_DELAY if fast_return else SERVO_STEP_DELAY)
         for a in range(from_angle + direction, to_angle + direction, direction):
             servo.set_angle(a)
             if delay:
@@ -164,8 +172,8 @@ class AdvancedMapper:
         # Use the servo's last-known angle so we never snap to an assumed position.
         current_angle = getattr(servo, 'angle', 0)
 
-        # Smoothly move to start of scan range
-        self._sweep_servo(servo, current_angle, angle_min, is_mock=is_mock)
+        # Smoothly move to start of scan range (fast initial movement)
+        self._sweep_servo(servo, current_angle, angle_min, is_mock=is_mock, fast_return=True)
         current_angle = angle_min
         if settle:
             time.sleep(settle)   # let vibration die before first reading
@@ -224,8 +232,8 @@ class AdvancedMapper:
             else:
                 print(f"  Angle {angle:3d}deg:  no valid reading (skipping)")
         
-        # Smoothly return servo to center and restore tilt
-        self._sweep_servo(servo, current_angle, 0, is_mock=is_mock)
+        # Smoothly return servo to center (faster return) and restore tilt
+        self._sweep_servo(servo, current_angle, 0, is_mock=is_mock, fast_return=True)
         if settle:
             time.sleep(settle)
         if px is not None:
@@ -343,10 +351,19 @@ class AdvancedMapper:
             # Mark free space along the ray from car to (just before) hit.
             self.mark_free_space(car_x, car_y, x_hit, y_hit)
 
-            # Mark occupied at hit point.
+            # Mark occupied at hit point and expand slightly to thicken walls.
             if self.occupancy_map[y_hit, x_hit] != OCCUPIED:
                 self.occupancy_map[y_hit, x_hit] = OCCUPIED
                 obstacles_found += 1
+                # Thicken obstacle by marking neighboring cells too (1-cell radius)
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        if dx == 0 and dy == 0:
+                            continue
+                        nx, ny = x_hit + dx, y_hit + dy
+                        if 0 <= nx < self.map_size and 0 <= ny < self.map_size:
+                            if self.occupancy_map[ny, nx] != OCCUPIED:
+                                self.occupancy_map[ny, nx] = OCCUPIED
         
         print(f"Map updated: {obstacles_found} new obstacles marked")
         return obstacles_found
@@ -389,7 +406,7 @@ class AdvancedMapper:
         Get the current occupancy map.
         
         Returns:
-            2D numpy array (-1 = unknown, 0 = free, 1 = obstacle)
+            2D numpy array (0 = free, 1 = obstacle)
         """
         return self.occupancy_map.copy()
     
@@ -401,12 +418,11 @@ class AdvancedMapper:
             show_car: Whether to show car position
         """
         print("\n" + "=" * (self.map_size + 2))
-        print("Occupancy Map (-1=unknown, 0=free, 1=obstacle, C=car)")
+        print("Occupancy Map (0=free, 1=obstacle, C=car)")
         print("=" * (self.map_size + 2))
         
         obstacles = 0
         free_cells = 0
-        unknown_cells = 0
         
         for y in range(self.map_size):
             line = "|"
@@ -416,12 +432,9 @@ class AdvancedMapper:
                 elif self.occupancy_map[y, x] == OCCUPIED:
                     line += "1"
                     obstacles += 1
-                elif self.occupancy_map[y, x] == FREE:
-                    line += "."
+                else:  # FREE (default)
+                    line += "0"
                     free_cells += 1
-                else:  # UNKNOWN
-                    line += "?"
-                    unknown_cells += 1
             line += "|"
             print(line)
         
@@ -430,7 +443,7 @@ class AdvancedMapper:
         real_y = (self.car_y - self.map_center) * CELL_SIZE_CM
         print(f"Car position: grid({self.car_x}, {self.car_y}) = real({real_x}cm, {real_y}cm), heading: {self.car_angle}deg")
         print(f"Grid: {self.map_size}x{self.map_size} cells @ {CELL_SIZE_CM}cm/cell = {self.map_size*CELL_SIZE_CM}cm x {self.map_size*CELL_SIZE_CM}cm coverage")
-        print(f"Obstacles: {obstacles}, Free: {free_cells}, Unknown: {unknown_cells}")
+        print(f"Obstacles: {obstacles}, Free: {free_cells}")
         print()
     
     def update_car_position(self, distance_cm=0, delta_angle_deg=0):
@@ -461,9 +474,9 @@ class AdvancedMapper:
             self.car_y = max(0, min(self.map_size - 1, self.car_y))
     
     def clear_map(self):
-        """Clear the occupancy map (reset to unknown)."""
-        self.occupancy_map = np.full((self.map_size, self.map_size), UNKNOWN, dtype=np.int8)
-        print("Map cleared (reset to unknown)")
+        """Clear the occupancy map (reset to all free)."""
+        self.occupancy_map = np.full((self.map_size, self.map_size), FREE, dtype=np.int8)
+        print("Map cleared (reset to all free)")
     
     def save_map(self, filename="map.npy"):
         """Save map to file."""
